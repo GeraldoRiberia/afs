@@ -6,7 +6,8 @@
 *.swp
 .buildlog/
 .history
-
+*.mp4
+*.jpg
 
 
 # Flutter repo-specific
