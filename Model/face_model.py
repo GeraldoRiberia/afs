@@ -235,7 +235,7 @@ if not main_user_embeddings:
 
 # 2. INITIALIZE TRACKER AND CAMERA
 model = YOLO(DETECTOR_MODEL)
-cap = cv2.VideoCapture(1)
+cap = cv2.VideoCapture(2)
 
 # Tracking state
 priority_track_id = None

@@ -6,7 +6,7 @@ FRAME_RATE = 30.0
 RESOLUTION = (640, 480)
 
 def record_scan():
-    cap = cv2.VideoCapture(0) # Use 0 for default webcam, change to 1 or 2 if needed
+    cap = cv2.VideoCapture(2) # Use 0 for default webcam, change to 1 or 2 if needed
     
     # Check if camera opened successfully
     if not cap.isOpened():
