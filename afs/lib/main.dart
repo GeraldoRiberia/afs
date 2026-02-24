@@ -98,6 +98,8 @@ class _CameraScreenState extends State<CameraScreen> {
   Offset _targetNormalizedCenter = const Offset(0.5, 0.5);
   double _targetScale = 1.0;
   bool _showBoundingBoxes = false;
+  bool _isRecording = false;
+  bool _isObsActive = false;
 
   // Device List
   List<dynamic> _availableDevices = [];
@@ -127,8 +129,14 @@ class _CameraScreenState extends State<CameraScreen> {
           if (mounted) {
             setState(() {
               _isWaitingForServer = false;
-              _latestTrackingResult = data;
-              _updateAutoFraming(data);
+              if (data['type'] == 'recording_ack') {
+                _isRecording = data['status'] == 'started';
+              } else if (data['type'] == 'obs_ack') {
+                _isObsActive = data['status'] == 'started';
+              } else if (data['type'] != 'mode_ack') {
+                _latestTrackingResult = data;
+                _updateAutoFraming(data);
+              }
             });
           }
         } catch (e) {
@@ -152,6 +160,24 @@ class _CameraScreenState extends State<CameraScreen> {
     if (_isConnected && _channel != null) {
       final payload = jsonEncode({
         "mode": _currentMode.name,
+      });
+      _channel!.sink.add(payload);
+    }
+  }
+
+  void _toggleRecording() {
+    if (_isConnected && _channel != null) {
+      final payload = jsonEncode({
+        "command": _isRecording ? "stop_recording" : "start_recording",
+      });
+      _channel!.sink.add(payload);
+    }
+  }
+
+  void _toggleObs() {
+    if (_isConnected && _channel != null) {
+      final payload = jsonEncode({
+        "command": _isObsActive ? "stop_obs" : "start_obs",
       });
       _channel!.sink.add(payload);
     }
@@ -535,6 +561,40 @@ class _CameraScreenState extends State<CameraScreen> {
                             activeColor: Colors.greenAccent,
                           ),
                         ],
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Container(
+                      padding: const EdgeInsets.all(4),
+                      decoration: BoxDecoration(
+                        color: Colors.black54,
+                        shape: BoxShape.circle,
+                        border: Border.all(color: _isRecording ? Colors.redAccent : Colors.white24),
+                      ),
+                      child: IconButton(
+                        icon: Icon(
+                          _isRecording ? Icons.stop_circle : Icons.fiber_manual_record,
+                          color: _isRecording ? Colors.redAccent : Colors.white,
+                        ),
+                        onPressed: _toggleRecording,
+                        tooltip: _isRecording ? "Stop Recording" : "Start Recording",
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Container(
+                      padding: const EdgeInsets.all(4),
+                      decoration: BoxDecoration(
+                        color: Colors.black54,
+                        shape: BoxShape.circle,
+                        border: Border.all(color: _isObsActive ? Colors.greenAccent : Colors.white24),
+                      ),
+                      child: IconButton(
+                        icon: Icon(
+                          _isObsActive ? Icons.cast_connected : Icons.cast,
+                          color: _isObsActive ? Colors.greenAccent : Colors.white,
+                        ),
+                        onPressed: _toggleObs,
+                        tooltip: _isObsActive ? "Stop OBS Stream" : "Start OBS Stream",
                       ),
                     ),
                   ],
