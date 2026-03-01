@@ -11,7 +11,6 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 import threading
-import pyvirtualcam
 
 from services.single_tracker import SingleTracker
 from services.multi_tracker import MultiTracker
@@ -24,10 +23,9 @@ logger = logging.getLogger(__name__)
 executor = ThreadPoolExecutor(max_workers=1)
 
 # --- OBS and Recording State ---
-latest_obs_frame = None  # Store the latest JPEG encoded cropped frame for the OBS feed (deprecated by vcam)
+latest_obs_frame = None  # Store the latest JPEG encoded cropped frame for the OBS feed
 obs_frame_lock = threading.Lock()
 is_obs_active = False
-vcam = None # Virtual Camera reference
 is_recording = False
 video_writer = None
 recording_filename = ""
@@ -175,9 +173,24 @@ async def obs_feed():
     """Endpoint for OBS Media Source to connect to."""
     return StreamingResponse(generate_obs_stream(), media_type="multipart/x-mixed-replace; boundary=frame")
 
+async def vcam_generator_loop():
+    """Background task to push frames to the virtual camera at 30fps."""
+    global is_obs_active, vcam, latest_vcam_frame
+    while True:
+        try:
+            if is_obs_active and vcam is not None and latest_vcam_frame is not None:
+                vcam.send(latest_vcam_frame)
+        except Exception as e:
+            logger.error(f"vcam loop error: {e}")
+        await asyncio.sleep(1/30)
+
+@app.on_event("startup")
+async def startup_event():
+    asyncio.create_task(vcam_generator_loop())
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
-    global is_recording, video_writer, recording_filename, latest_obs_frame, is_obs_active, vcam
+    global is_recording, video_writer, recording_filename, latest_obs_frame, is_obs_active
     
     await websocket.accept()
     logger.info("New WebSocket connection established.")
@@ -215,20 +228,12 @@ async def websocket_endpoint(websocket: WebSocket):
                         elif command == "start_obs":
                             if not is_obs_active:
                                 is_obs_active = True
-                                logger.info("Started OBS Virtual Camera stream")
-                                try:
-                                    if vcam is None:
-                                        vcam = pyvirtualcam.Camera(width=1280, height=720, fps=30)
-                                except Exception as e:
-                                    logger.error(f"Failed to start vcam: {e}")
+                                logger.info("Started OBS MJPEG stream")
                                 await websocket.send_json({"type": "obs_ack", "status": "started"})
                         elif command == "stop_obs":
                             if is_obs_active:
                                 is_obs_active = False
-                                logger.info("Stopped OBS Virtual Camera stream")
-                                if vcam is not None:
-                                    vcam.close()
-                                    vcam = None
+                                logger.info("Stopped OBS MJPEG stream")
                                 await websocket.send_json({"type": "obs_ack", "status": "stopped"})
                 except json.JSONDecodeError:
                     logger.error("Invalid JSON received.")
@@ -269,15 +274,12 @@ async def websocket_endpoint(websocket: WebSocket):
                 try:
                     cropped_frame = apply_center_stage_crop(frame, response_data)
                     
-                    # 1. Update OBS Virtual Camera
-                    if is_obs_active and vcam is not None:
-                        try:
-                            # Virtual cameras generally strict size requirements
-                            cam_frame = cv2.resize(cropped_frame, (vcam.width, vcam.height))
-                            cam_frame = cv2.cvtColor(cam_frame, cv2.COLOR_BGR2RGB)
-                            vcam.send(cam_frame)
-                        except Exception as e:
-                            logger.error(f"Failed to push vcam frame: {e}")
+                    # 1. Update OBS Feed
+                    if is_obs_active:
+                        ret, buffer = cv2.imencode('.jpg', cropped_frame)
+                        if ret:
+                            with obs_frame_lock:
+                                latest_obs_frame = buffer.tobytes()
                     
                     # 2. Update Recording Output
                     if is_recording:
@@ -302,10 +304,6 @@ async def websocket_endpoint(websocket: WebSocket):
     except Exception as e:
         logger.error(f"WebSocket error: {e}")
     finally:
-        # Cleanup Virtual Camera
-        if vcam is not None:
-            vcam.close()
-            vcam = None
         is_obs_active = False
 
         # Cleanup Recording
