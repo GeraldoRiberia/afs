@@ -3,6 +3,7 @@ import cv2
 import numpy as np
 import logging
 from ultralytics import YOLO
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -11,8 +12,13 @@ class MultiTracker:
         logger.info("Initializing Multi Tracker (Group Centroid)")
         
         # Determine paths
-        base_dir = "/Users/adisankarlalan/Documents/GitHub/afs-fl/Model"
-        detector_model_path = os.path.join(base_dir, "yolov8n-face.pt")
+
+        # Get the directory containing the current script (server.py)
+        base_dir = Path(__file__).parent.parent
+
+        # Go up one level (to afs/), then into Model/
+        detector_model_path = base_dir.parent / "Model" / "yolov8n-face.pt"
+        print(detector_model_path,"de")
         
         try:
             self.model = YOLO(detector_model_path)

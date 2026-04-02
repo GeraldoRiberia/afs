@@ -39,6 +39,7 @@ dependencies:
   camera_macos: ^0.0.9
   web_socket_channel: ^3.0.3
   image: ^4.8.0
+  google_fonts: ^6.2.1
 
 dev_dependencies:
   flutter_test:

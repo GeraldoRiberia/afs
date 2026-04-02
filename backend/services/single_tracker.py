@@ -1,10 +1,12 @@
 import os
+from pathlib import Path
 import cv2
 import pickle
 import numpy as np
 import logging
 from ultralytics import YOLO
 from deepface import DeepFace
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -13,7 +15,11 @@ class SingleTracker:
         logger.info("Initializing Single Tracker (Face Priority)")
         
         # Configuration matches face_model.py
-        self.base_dir = "/Users/adisankarlalan/Documents/GitHub/afs-fl/Model"
+        # self.base_dir = "/Users/adisankarlalan/Documents/GitHub/afs-fl/Model"
+        base_dir = Path(__file__).parent
+        self.base_dir = base_dir.parent.parent / "Model" 
+        print(self.base_dir,"base")
+
         self.reference_video_path = os.path.join(self.base_dir, 'my_scan.mp4')
         self.model_name = "ArcFace"
         self.detector_model_path = os.path.join(self.base_dir, "yolov8n-face.pt")
