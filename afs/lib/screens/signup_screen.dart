@@ -203,35 +203,35 @@ class _SignUpScreenState extends State<SignUpScreen> {
                       const SizedBox(height: 32),
 
                       // Security gate divider
-                      Row(
-                        children: [
-                          Expanded(
-                              child: Divider(
-                                  color: AfsTheme.outlineGhost, thickness: 1)),
-                          Padding(
-                            padding: const EdgeInsets.symmetric(horizontal: 16),
-                            child: Text('SECURITY GATE',
-                                style: AfsTheme.labelSmall(
-                                    AfsTheme.ashGray.withAlpha(100))),
-                          ),
-                          Expanded(
-                              child: Divider(
-                                  color: AfsTheme.outlineGhost, thickness: 1)),
-                        ],
-                      ),
+                      // Row(
+                      //   children: [
+                      //     Expanded(
+                      //         child: Divider(
+                      //             color: AfsTheme.outlineGhost, thickness: 1)),
+                      //     Padding(
+                      //       padding: const EdgeInsets.symmetric(horizontal: 16),
+                      //       child: Text('SECURITY GATE',
+                      //           style: AfsTheme.labelSmall(
+                      //               AfsTheme.ashGray.withAlpha(100))),
+                      //     ),
+                      //     Expanded(
+                      //         child: Divider(
+                      //             color: AfsTheme.outlineGhost, thickness: 1)),
+                      //   ],
+                      // ),
 
-                      const SizedBox(height: 20),
+                      // const SizedBox(height: 20),
 
-                      // Social auth buttons
-                      _SocialAuthButton(
-                        icon: Icons.g_mobiledata_rounded,
-                        label: 'SYNC WITH GOOGLE CLOUD',
-                      ),
-                      const SizedBox(height: 12),
-                      _SocialAuthButton(
-                        icon: Icons.apple_rounded,
-                        label: 'AUTH WITH APPLE ID',
-                      ),
+                      // // Social auth buttons
+                      // _SocialAuthButton(
+                      //   icon: Icons.g_mobiledata_rounded,
+                      //   label: 'SYNC WITH GOOGLE CLOUD',
+                      // ),
+                      // const SizedBox(height: 12),
+                      // _SocialAuthButton(
+                      //   icon: Icons.apple_rounded,
+                      //   label: 'AUTH WITH APPLE ID',
+                      // ),
 
                       const SizedBox(height: 28),
 

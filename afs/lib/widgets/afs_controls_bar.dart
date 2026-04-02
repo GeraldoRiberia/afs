@@ -1,28 +1,25 @@
 import 'dart:ui';
-import 'dart:io';
 import 'package:flutter/material.dart';
-import 'package:camera_macos/camera_macos.dart';
-import 'package:camera/camera.dart';
 import '../theme.dart';
 import 'tracking_chip.dart';
 
-/// Glassmorphic bottom control bar — mode chips, bbox toggle, camera selector.
+/// Glassmorphic bottom control bar — mode chips, record button, bbox toggle.
 class AfsControlsBar extends StatelessWidget {
   final TrackingModeSelector modeSelector;
   final bool showBoundingBoxes;
   final ValueChanged<bool> onBoundingBoxToggle;
-  final List<dynamic> availableDevices;
-  final dynamic selectedDevice;
-  final ValueChanged<dynamic> onDeviceSelected;
+
+  // Recording
+  final bool isRecording;
+  final VoidCallback onRecordToggle;
 
   const AfsControlsBar({
     super.key,
     required this.modeSelector,
     required this.showBoundingBoxes,
     required this.onBoundingBoxToggle,
-    required this.availableDevices,
-    required this.selectedDevice,
-    required this.onDeviceSelected,
+    required this.isRecording,
+    required this.onRecordToggle,
   });
 
   @override
@@ -58,6 +55,14 @@ class AfsControlsBar extends StatelessWidget {
 
               const Spacer(),
 
+              // ── Record Button (centre) ──────────────────────────────────
+              _RecordButton(
+                isRecording: isRecording,
+                onTap: onRecordToggle,
+              ),
+
+              const Spacer(),
+
               // Bounding box toggle
               _GlassToggle(
                 icon: Icons.crop_square_rounded,
@@ -67,15 +72,92 @@ class AfsControlsBar extends StatelessWidget {
               ),
 
               const SizedBox(width: 12),
-
-              // Camera selector
-              if (availableDevices.isNotEmpty)
-                _CameraSelector(
-                  devices: availableDevices,
-                  selected: selectedDevice,
-                  onSelected: onDeviceSelected,
-                ),
             ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Pulsing record button — looks like a camera app shutter
+class _RecordButton extends StatefulWidget {
+  final bool isRecording;
+  final VoidCallback onTap;
+  const _RecordButton({required this.isRecording, required this.onTap});
+
+  @override
+  State<_RecordButton> createState() => _RecordButtonState();
+}
+
+class _RecordButtonState extends State<_RecordButton>
+    with SingleTickerProviderStateMixin {
+  late AnimationController _pulseCtrl;
+  late Animation<double> _pulseAnim;
+
+  @override
+  void initState() {
+    super.initState();
+    _pulseCtrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 900),
+    )..repeat(reverse: true);
+    _pulseAnim = Tween<double>(begin: 1.0, end: 1.18).animate(
+      CurvedAnimation(parent: _pulseCtrl, curve: Curves.easeInOut),
+    );
+  }
+
+  @override
+  void dispose() {
+    _pulseCtrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: widget.onTap,
+      child: AnimatedBuilder(
+        animation: _pulseAnim,
+        builder: (context, child) {
+          final scale = widget.isRecording ? _pulseAnim.value : 1.0;
+          return Transform.scale(
+            scale: scale,
+            child: child,
+          );
+        },
+        child: Container(
+          width: 52,
+          height: 52,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            border: Border.all(
+              color: widget.isRecording
+                  ? AfsTheme.errorColor.withValues(alpha: 0.9)
+                  : Colors.white.withValues(alpha: 0.6),
+              width: 2.5,
+            ),
+          ),
+          padding: const EdgeInsets.all(5),
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 250),
+            curve: Curves.easeInOut,
+            decoration: BoxDecoration(
+              color: widget.isRecording
+                  ? AfsTheme.errorColor
+                  : AfsTheme.errorColor.withValues(alpha: 0.85),
+              borderRadius: BorderRadius.circular(
+                  widget.isRecording ? 6 : 999),
+              boxShadow: widget.isRecording
+                  ? [
+                      BoxShadow(
+                        color: AfsTheme.errorColor.withValues(alpha: 0.55),
+                        blurRadius: 14,
+                        spreadRadius: 2,
+                      )
+                    ]
+                  : [],
+            ),
           ),
         ),
       ),
@@ -151,58 +233,6 @@ class _GlassToggle extends StatelessWidget {
               ),
             ),
           ],
-        ),
-      ),
-    );
-  }
-}
-
-class _CameraSelector extends StatelessWidget {
-  final List<dynamic> devices;
-  final dynamic selected;
-  final ValueChanged<dynamic> onSelected;
-
-  const _CameraSelector({
-    required this.devices,
-    required this.selected,
-    required this.onSelected,
-  });
-
-  String _deviceName(dynamic device) {
-    if (Platform.isMacOS) {
-      final d = device as CameraMacOSDevice;
-      final name = d.localizedName ?? 'Camera ${d.deviceId}';
-      return name.length > 28 ? '${name.substring(0, 25)}...' : name;
-    } else {
-      final d = device as CameraDescription;
-      return '${d.name} (${d.lensDirection.name})';
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      height: 40,
-      padding: const EdgeInsets.symmetric(horizontal: 12),
-      decoration: BoxDecoration(
-        color: AfsTheme.surfaceHigh,
-        borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: AfsTheme.outlineGhost),
-      ),
-      child: DropdownButtonHideUnderline(
-        child: DropdownButton<dynamic>(
-          value: selected,
-          dropdownColor: AfsTheme.surfaceHighest,
-          icon: Icon(Icons.keyboard_arrow_up_rounded,
-              size: 18, color: AfsTheme.ashGray.withValues(alpha: 0.7)),
-          style: AfsTheme.bodySmall(AfsTheme.ashGray),
-          onChanged: onSelected,
-          items: devices.map((device) {
-            return DropdownMenuItem<dynamic>(
-              value: device,
-              child: Text(_deviceName(device)),
-            );
-          }).toList(),
         ),
       ),
     );

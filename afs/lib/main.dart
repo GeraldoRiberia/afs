@@ -9,11 +9,12 @@ import 'package:camera_macos/camera_macos.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:image/image.dart' as img;
 
 import 'theme.dart';
-import 'widgets/quick_settings_drawer.dart';
+import 'screens/settings_screen.dart';
 import 'widgets/hud_stat_tile.dart';
 import 'widgets/afs_controls_bar.dart';
 import 'screens/onboarding_screen.dart';
@@ -90,7 +91,7 @@ class _CameraScreenState extends State<CameraScreen> {
   // Backend state
   WebSocketChannel? _channel;
   bool _isConnected = false;
-  final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
+
 
   // Zoom/Center Stage state
   Map<String, dynamic>? _latestTrackingResult;
@@ -113,12 +114,26 @@ class _CameraScreenState extends State<CameraScreen> {
   List<dynamic> _availableDevices = [];
   dynamic _selectedDevice;
 
+  // Audio Device List (macOS only)
+  List<dynamic> _availableAudioDevices = [];
+  dynamic _selectedAudioDevice;
+
   // Backend address
   final String _backendUrl =
       Platform.isAndroid ? 'ws://10.0.2.2:8000/ws' : 'ws://127.0.0.1:8000/ws';
 
-  // Sidebar collapse threshold
-  static const double _sidebarBreakpoint = 900.0;
+  // ── Recording state ───────────────────────────────────────────────────────
+  bool _isRecording = false;
+  DateTime? _recordingStart;
+  Timer? _recordingTimer;
+  Duration _recordingElapsed = Duration.zero;
+
+  // ── Connection toggle ──────────────────────────────────────────────────────
+  bool _autoReconnect = true;
+
+  // ── HUD visibility ─────────────────────────────────────────────────────────
+  bool _hudVisible = true;
+
 
   @override
   void initState() {
@@ -128,6 +143,7 @@ class _CameraScreenState extends State<CameraScreen> {
   }
 
   void _connectWebSocket() {
+    if (!_autoReconnect) return;
     try {
       _channel = WebSocketChannel.connect(Uri.parse(_backendUrl));
       _isConnected = true;
@@ -149,7 +165,9 @@ class _CameraScreenState extends State<CameraScreen> {
       }, onDone: () {
         debugPrint("WebSocket disconnected");
         if (mounted) setState(() { _isConnected = false; _isWaitingForServer = false; });
-        Future.delayed(const Duration(seconds: 3), _connectWebSocket);
+        if (_autoReconnect) {
+          Future.delayed(const Duration(seconds: 3), _connectWebSocket);
+        }
       }, onError: (error) {
         debugPrint("WebSocket Error: $error");
         if (mounted) setState(() { _isConnected = false; _isWaitingForServer = false; });
@@ -159,8 +177,46 @@ class _CameraScreenState extends State<CameraScreen> {
     }
   }
 
+  void _disconnectWebSocket() {
+    _autoReconnect = false;
+    _channel?.sink.close();
+    _channel = null;
+    if (mounted) {
+      setState(() {
+        _isConnected = false;
+        _isWaitingForServer = false;
+        _latestTrackingResult = null;
+        _targetScale = 1.0;
+        _targetNormalizedCenter = const Offset(0.5, 0.5);
+      });
+    }
+  }
+
+  void _toggleConnection() {
+    if (_isConnected) {
+      _disconnectWebSocket();
+    } else {
+      setState(() => _autoReconnect = true);
+      _connectWebSocket();
+    }
+  }
+
+  void _resetZoom() {
+    setState(() {
+      _targetScale = 1.0;
+      _targetNormalizedCenter = const Offset(0.5, 0.5);
+      _latestTrackingResult = null;
+    });
+    // Tell the backend to drop its current target and re-detect
+    if (_isConnected && _channel != null) {
+      _channel!.sink.add(jsonEncode({'reset': true}));
+    }
+  }
+
   void _scheduleReconnection() {
-    Future.delayed(const Duration(seconds: 3), _connectWebSocket);
+    if (_autoReconnect) {
+      Future.delayed(const Duration(seconds: 3), _connectWebSocket);
+    }
   }
 
   void _sendModeUpdate() {
@@ -295,17 +351,20 @@ class _CameraScreenState extends State<CameraScreen> {
 
     if (Platform.isMacOS) {
       try {
-        List<CameraMacOSDevice> devices = await CameraMacOS.instance
+        final videoDevices = await CameraMacOS.instance
             .listDevices(deviceType: CameraMacOSDeviceType.video);
+        final audioDevices = await CameraMacOS.instance
+            .listDevices(deviceType: CameraMacOSDeviceType.audio);
         setState(() {
-          _availableDevices = devices;
-          if (devices.isNotEmpty) {
-            _selectedDevice = devices.first;
+          _availableDevices = videoDevices;
+          _availableAudioDevices = audioDevices;
+          if (audioDevices.isNotEmpty) _selectedAudioDevice = audioDevices.first;
+          if (videoDevices.isNotEmpty) {
+            _selectedDevice = videoDevices.first;
             _initializeMacOSCamera(_selectedDevice);
           }
         });
-      } catch (_) {
-      }
+      } catch (_) {}
     } else {
       setState(() {
         _availableDevices = _mobileCameras;
@@ -327,7 +386,7 @@ class _CameraScreenState extends State<CameraScreen> {
     _mobileController = CameraController(
       camera,
       ResolutionPreset.high,
-      enableAudio: false,
+      enableAudio: true,
     );
     try {
       await _mobileController!.initialize();
@@ -352,9 +411,128 @@ class _CameraScreenState extends State<CameraScreen> {
     }
   }
 
+  void _onAudioDeviceSelected(dynamic device) {
+    setState(() => _selectedAudioDevice = device);
+  }
+
+  // ── Recording ─────────────────────────────────────────────────────────────
+  Future<void> _toggleRecording() async {
+    if (_isRecording) {
+      await _stopRecording();
+    } else {
+      await _startRecording();
+    }
+  }
+
+  Future<void> _startRecording() async {
+    if (!_isCameraInitialized) return;
+    try {
+      if (Platform.isMacOS && _macOSController != null) {
+        final dir = await getApplicationDocumentsDirectory();
+        final ts = DateTime.now().millisecondsSinceEpoch;
+        final path = '${dir.path}/AFS_REC_$ts.mov';
+        await _macOSController!.recordVideo(
+          url: path,
+          enableAudio: true,
+        );
+      } else if (_mobileController != null &&
+          _mobileController!.value.isInitialized) {
+        await _mobileController!.startVideoRecording();
+      }
+      if (mounted) {
+        setState(() {
+          _isRecording = true;
+          _recordingStart = DateTime.now();
+          _recordingElapsed = Duration.zero;
+        });
+        _recordingTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+          if (mounted && _recordingStart != null) {
+            setState(() {
+              _recordingElapsed =
+                  DateTime.now().difference(_recordingStart!);
+            });
+          }
+        });
+      }
+    } catch (e) {
+      debugPrint('Start recording error: $e');
+    }
+  }
+
+  Future<void> _stopRecording() async {
+    _recordingTimer?.cancel();
+    _recordingTimer = null;
+    String? savedPath;
+    try {
+      if (Platform.isMacOS && _macOSController != null) {
+        final file = await _macOSController!.stopRecording();
+        if (file != null) {
+          final dir = await getApplicationDocumentsDirectory();
+          final ts = DateTime.now().millisecondsSinceEpoch;
+          savedPath = '${dir.path}/AFS_REC_$ts.mov';
+          if (file.bytes != null) {
+            await File(savedPath).writeAsBytes(file.bytes!);
+          } else {
+            savedPath = null;
+          }
+        }
+      } else if (_mobileController != null) {
+        final xfile = await _mobileController!.stopVideoRecording();
+        savedPath = xfile.path;
+      }
+    } catch (e) {
+      debugPrint('Stop recording error: $e');
+    }
+    if (mounted) {
+      setState(() {
+        _isRecording = false;
+        _recordingStart = null;
+        _recordingElapsed = Duration.zero;
+      });
+      if (savedPath != null) {
+        _showSavedSnackbar(savedPath);
+      }
+    }
+  }
+
+  void _showSavedSnackbar(String path) {
+    final filename = path.split('/').last;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        backgroundColor: AfsTheme.surfaceHighest,
+        behavior: SnackBarBehavior.floating,
+        margin: const EdgeInsets.all(16),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        duration: const Duration(seconds: 4),
+        content: Row(
+          children: [
+            Icon(Icons.check_circle_outline_rounded,
+                color: AfsTheme.neonGreen, size: 18),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Recording saved',
+                      style: AfsTheme.bodySmall(AfsTheme.ashGray)),
+                  Text(filename,
+                      style: AfsTheme.monoSmall(
+                          AfsTheme.ashGray.withValues(alpha: 0.6)),
+                      overflow: TextOverflow.ellipsis),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   void dispose() {
     _frameTimer?.cancel();
+    _recordingTimer?.cancel();
     _channel?.sink.close();
     _mobileController?.dispose();
     super.dispose();
@@ -368,11 +546,17 @@ class _CameraScreenState extends State<CameraScreen> {
     if (Platform.isMacOS) {
       return _selectedDevice != null
           ? CameraMacOSView(
-              key: ValueKey((_selectedDevice as CameraMacOSDevice).deviceId),
+              // Rebuild when video OR audio device changes
+              key: ValueKey(
+                '${(_selectedDevice as CameraMacOSDevice).deviceId}'
+                '_${(_selectedAudioDevice as CameraMacOSDevice?)?.deviceId ?? 'default'}',
+              ),
               fit: BoxFit.cover,
               deviceId: (_selectedDevice as CameraMacOSDevice).deviceId,
+              audioDeviceId:
+                  (_selectedAudioDevice as CameraMacOSDevice?)?.deviceId,
               cameraMode: CameraMacOSMode.photo,
-              enableAudio: false,
+              enableAudio: true,
               onCameraInizialized: (CameraMacOSController controller) {
                 _macOSController = controller;
                 if (!_isCameraInitialized) {
@@ -419,10 +603,13 @@ class _CameraScreenState extends State<CameraScreen> {
     return LayoutBuilder(
       builder: (context, constraints) {
         final W = constraints.maxWidth;
-        // H was removed because it was unused
         final isLandscape = constraints.maxWidth > constraints.maxHeight;
-        final showSidebar = isLandscape && W > 800;
-        
+        // Sidebar reserves space only when wide AND the user hasn't hidden it
+        final isWide = isLandscape && W > 800;
+        final reserveSpace = isWide && _hudVisible;
+        // Show HUD whenever user wants it (overlay when narrow, inline when wide)
+        final showHud = _hudVisible;
+
         double S = _targetScale;
         double ncx = _targetNormalizedCenter.dx;
         double ncy = _targetNormalizedCenter.dy;
@@ -437,17 +624,30 @@ class _CameraScreenState extends State<CameraScreen> {
         final cameraWidget = _buildCameraWidget();
 
         return Scaffold(
-          key: _scaffoldKey,
           backgroundColor: AfsTheme.surfaceDim,
-          endDrawer: const QuickSettingsDrawer(),
           body: Column(
             children: [
-              // Default exact top bar match
+              // Top status bar
               _TopStatusBar(
                 isConnected: _isConnected,
                 mode: _currentMode,
                 fps: _currentFps,
-                onSettings: () => _scaffoldKey.currentState?.openEndDrawer(),
+                isRecording: _isRecording,
+                recordingElapsed: _recordingElapsed,
+                hudVisible: _hudVisible,
+                onHudToggle: () => setState(() => _hudVisible = !_hudVisible),
+                onSettings: () => Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => SettingsScreen(
+                      availableDevices: _availableDevices,
+                      selectedDevice: _selectedDevice,
+                      onDeviceSelected: _onDeviceSelected,
+                      availableAudioDevices: _availableAudioDevices,
+                      selectedAudioDevice: _selectedAudioDevice,
+                      onAudioDeviceSelected: _onAudioDeviceSelected,
+                    ),
+                  ),
+                ),
                 onLogout: () => Navigator.of(context).pushReplacement(
                   MaterialPageRoute(builder: (_) => const LoginScreen()),
                 ),
@@ -455,7 +655,7 @@ class _CameraScreenState extends State<CameraScreen> {
               Expanded(
                 child: Row(
                   children: [
-                    if (showSidebar) _buildLeftSidebar(),
+
                     Expanded(
                       child: Stack(
             fit: StackFit.expand,
@@ -464,7 +664,7 @@ class _CameraScreenState extends State<CameraScreen> {
               Positioned(
                 top: 0,
                 left: 0,
-                right: showSidebar ? sidebarW : 0,
+                right: reserveSpace ? sidebarW : 0,
                 bottom: controlBarH,
                 child: ClipRect(
                   child: TweenAnimationBuilder<double>(
@@ -497,7 +697,7 @@ class _CameraScreenState extends State<CameraScreen> {
                 Positioned(
                   top: 0,
                   left: 0,
-                  right: showSidebar ? sidebarW : 0,
+                  right: reserveSpace ? sidebarW : 0,
                   bottom: controlBarH,
                   child: CustomPaint(
                     painter: BoundingBoxPainter(
@@ -512,19 +712,35 @@ class _CameraScreenState extends State<CameraScreen> {
               // Removed duplicated Top Status bar since we moved it above the Row
 
               // ── 4. Right HUD Sidebar ───────────────────────────────────
-              if (showSidebar)
+              // On wide screens: reserved inline space.
+              // On narrow screens: floating overlay with semi-transparent backdrop.
+              if (showHud)
                 Positioned(
                   top: 0,
                   right: 0,
                   width: sidebarW,
                   bottom: controlBarH,
-                  child: _HudSidebar(
-                    isConnected: _isConnected,
-                    detectedCount: _detectedCount,
-                    zoom: _zoomLabel,
-                    fps: _currentFps,
-                    mode: _currentMode,
-                    hasTarget: _targetScale > 1.05,
+                  child: Stack(
+                    children: [
+                      // Dim backdrop only when overlaying (narrow mode)
+                      if (!reserveSpace)
+                        GestureDetector(
+                          onTap: () => setState(() => _hudVisible = false),
+                          child: Container(
+                            color: Colors.black.withValues(alpha: 0.0),
+                          ),
+                        ),
+                      _HudSidebar(
+                        isConnected: _isConnected,
+                        detectedCount: _detectedCount,
+                        zoom: _zoomLabel,
+                        fps: _currentFps,
+                        mode: _currentMode,
+                        hasTarget: _targetScale > 1.05,
+                        onConnectionToggle: _toggleConnection,
+                        onZoomReset: _resetZoom,
+                      ),
+                    ],
                   ),
                 ),
 
@@ -553,9 +769,8 @@ class _CameraScreenState extends State<CameraScreen> {
                   showBoundingBoxes: _showBoundingBoxes,
                   onBoundingBoxToggle: (v) =>
                       setState(() => _showBoundingBoxes = v),
-                  availableDevices: _availableDevices,
-                  selectedDevice: _selectedDevice,
-                  onDeviceSelected: _onDeviceSelected,
+                  isRecording: _isRecording,
+                  onRecordToggle: _toggleRecording,
                 ),
               ),
             ],
@@ -571,57 +786,17 @@ class _CameraScreenState extends State<CameraScreen> {
     ); // End LayoutBuilder
   } // End build method
 
-  Widget _buildLeftSidebar() {
-    return Container(
-      width: 240,
-      color: AfsTheme.surfaceLowest,
-      child: Column(
-        children: [
-          const SizedBox(height: 24),
-          _NavSidebarItem(icon: Icons.dashboard_rounded, label: 'DASHBOARD', isActive: true),
-          _NavSidebarItem(icon: Icons.videocam_rounded, label: 'CAMERAS'),
-          _NavSidebarItem(icon: Icons.location_on_rounded, label: 'WAYPOINTS'),
-          _NavSidebarItem(icon: Icons.show_chart_rounded, label: 'TIMELINE'),
-          _NavSidebarItem(icon: Icons.upload_rounded, label: 'EXPORT'),
-          const Spacer(),
-          // Operator
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 24),
-            child: Row(
-              children: [
-                Container(
-                  width: 32,
-                  height: 32,
-                  decoration: BoxDecoration(
-                    color: AfsTheme.neonGreen,
-                    shape: BoxShape.circle,
-                  ),
-                  child: Center(
-                    child: Text('01', style: AfsTheme.monoSmall(AfsTheme.onPrimaryFixed)),
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text('OPERATOR_01', style: AfsTheme.monoSmall(AfsTheme.ashGray)),
-                    Text('SYSTEM_ACTIVE', style: AfsTheme.monoSmall(AfsTheme.neonGreen).copyWith(fontSize: 10)),
-                  ],
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
 }
 
 // ── Top Status Bar ────────────────────────────────────────────────────────────
-class _TopStatusBar extends StatelessWidget {
+class _TopStatusBar extends StatefulWidget {
   final bool isConnected;
   final TrackingMode mode;
   final double fps;
+  final bool isRecording;
+  final Duration recordingElapsed;
+  final bool hudVisible;
+  final VoidCallback? onHudToggle;
   final VoidCallback? onSettings;
   final VoidCallback? onLogout;
 
@@ -629,9 +804,47 @@ class _TopStatusBar extends StatelessWidget {
     required this.isConnected,
     required this.mode,
     required this.fps,
+    required this.isRecording,
+    required this.recordingElapsed,
+    required this.hudVisible,
+    this.onHudToggle,
     this.onSettings,
     this.onLogout,
   });
+
+  @override
+  State<_TopStatusBar> createState() => _TopStatusBarState();
+}
+
+class _TopStatusBarState extends State<_TopStatusBar>
+    with SingleTickerProviderStateMixin {
+  late AnimationController _recPulse;
+  late Animation<double> _recAlpha;
+
+  @override
+  void initState() {
+    super.initState();
+    _recPulse = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 800),
+    )..repeat(reverse: true);
+    _recAlpha = Tween<double>(begin: 0.5, end: 1.0).animate(
+      CurvedAnimation(parent: _recPulse, curve: Curves.easeInOut),
+    );
+  }
+
+  @override
+  void dispose() {
+    _recPulse.dispose();
+    super.dispose();
+  }
+
+  String _formatDuration(Duration d) {
+    final h = d.inHours;
+    final m = d.inMinutes.remainder(60).toString().padLeft(2, '0');
+    final s = d.inSeconds.remainder(60).toString().padLeft(2, '0');
+    return h > 0 ? '$h:$m:$s' : '$m:$s';
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -649,14 +862,14 @@ class _TopStatusBar extends StatelessWidget {
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.center,
             children: [
-              // App branding
+              // Connection dot
               Container(
                 width: 6,
                 height: 6,
                 decoration: BoxDecoration(
-                  color: isConnected ? AfsTheme.neonGreen : AfsTheme.errorColor,
+                  color: widget.isConnected ? AfsTheme.neonGreen : AfsTheme.errorColor,
                   shape: BoxShape.circle,
-                  boxShadow: isConnected
+                  boxShadow: widget.isConnected
                       ? [
                           BoxShadow(
                             color: AfsTheme.neonGreen.withValues(alpha: 0.8),
@@ -670,14 +883,56 @@ class _TopStatusBar extends StatelessWidget {
               Text('AFS', style: AfsTheme.monoMedium(AfsTheme.neonGreen)),
               const SizedBox(width: 6),
               Text('Auto Framing Software',
-                  style: AfsTheme.bodySmall(AfsTheme.ashGray.withValues(alpha: 0.5))),
+                  style: AfsTheme.bodySmall(
+                      AfsTheme.ashGray.withValues(alpha: 0.5))),
 
               const Spacer(),
 
+              // ── REC indicator (only when recording) ──
+              if (widget.isRecording)
+                AnimatedBuilder(
+                  animation: _recAlpha,
+                  builder: (context, _) {
+                    return Container(
+                      margin: const EdgeInsets.only(right: 10),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 10, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: AfsTheme.errorColor
+                            .withValues(alpha: _recAlpha.value * 0.18),
+                        borderRadius: BorderRadius.circular(999),
+                        border: Border.all(
+                          color: AfsTheme.errorColor
+                              .withValues(alpha: _recAlpha.value * 0.7),
+                        ),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Container(
+                            width: 6,
+                            height: 6,
+                            decoration: BoxDecoration(
+                              color: AfsTheme.errorColor
+                                  .withValues(alpha: _recAlpha.value),
+                              shape: BoxShape.circle,
+                            ),
+                          ),
+                          const SizedBox(width: 6),
+                          Text(
+                            'REC  ${_formatDuration(widget.recordingElapsed)}',
+                            style: AfsTheme.labelSmall(AfsTheme.errorColor),
+                          ),
+                        ],
+                      ),
+                    );
+                  },
+                ),
+
               // FPS badge
-              if (fps > 0) ...[
+              if (widget.fps > 0) ...[
                 _StatusBadge(
-                  label: '${fps.toStringAsFixed(1)} fps',
+                  label: '${widget.fps.toStringAsFixed(1)} fps',
                   color: AfsTheme.infoColor,
                 ),
                 const SizedBox(width: 8),
@@ -685,16 +940,49 @@ class _TopStatusBar extends StatelessWidget {
 
               // Connection status
               _StatusBadge(
-                label: isConnected ? 'CONNECTED' : 'DISCONNECTED',
-                color: isConnected ? AfsTheme.neonGreen : AfsTheme.errorColor,
+                label: widget.isConnected ? 'CONNECTED' : 'DISCONNECTED',
+                color: widget.isConnected ? AfsTheme.neonGreen : AfsTheme.errorColor,
               ),
 
               const SizedBox(width: 8),
 
-              // Settings button
-              if (onSettings != null)
+              // HUD toggle button
+              if (widget.onHudToggle != null) ...[
                 GestureDetector(
-                  onTap: onSettings,
+                  onTap: widget.onHudToggle,
+                  child: AnimatedContainer(
+                    duration: const Duration(milliseconds: 200),
+                    width: 30,
+                    height: 30,
+                    decoration: BoxDecoration(
+                      color: widget.hudVisible
+                          ? AfsTheme.neonGreen.withValues(alpha: 0.12)
+                          : AfsTheme.surfaceHighest,
+                      shape: BoxShape.circle,
+                      border: Border.all(
+                        color: widget.hudVisible
+                            ? AfsTheme.neonGreen.withValues(alpha: 0.35)
+                            : Colors.transparent,
+                      ),
+                    ),
+                    child: Icon(
+                      widget.hudVisible
+                          ? Icons.view_sidebar_rounded
+                          : Icons.view_sidebar_outlined,
+                      size: 15,
+                      color: widget.hudVisible
+                          ? AfsTheme.neonGreen
+                          : AfsTheme.ashGray,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 6),
+              ],
+
+              // Settings button
+              if (widget.onSettings != null)
+                GestureDetector(
+                  onTap: widget.onSettings,
                   child: Container(
                     width: 30,
                     height: 30,
@@ -710,9 +998,9 @@ class _TopStatusBar extends StatelessWidget {
               const SizedBox(width: 6),
 
               // Logout button
-              if (onLogout != null)
+              if (widget.onLogout != null)
                 GestureDetector(
-                  onTap: onLogout,
+                  onTap: widget.onLogout,
                   child: Container(
                     width: 30,
                     height: 30,
@@ -760,6 +1048,8 @@ class _HudSidebar extends StatelessWidget {
   final double fps;
   final TrackingMode mode;
   final bool hasTarget;
+  final VoidCallback onConnectionToggle;
+  final VoidCallback onZoomReset;
 
   const _HudSidebar({
     required this.isConnected,
@@ -768,6 +1058,8 @@ class _HudSidebar extends StatelessWidget {
     required this.fps,
     required this.mode,
     required this.hasTarget,
+    required this.onConnectionToggle,
+    required this.onZoomReset,
   });
 
   @override
@@ -817,6 +1109,7 @@ class _HudSidebar extends StatelessWidget {
                 valueColor: hasTarget
                     ? AfsTheme.neonGreen
                     : AfsTheme.ashGray.withValues(alpha: 0.5),
+                onTap: hasTarget ? onZoomReset : null,
               ),
               const SizedBox(height: 10),
 
@@ -828,52 +1121,66 @@ class _HudSidebar extends StatelessWidget {
 
               const Spacer(),
 
-              // System status strip
-              Container(
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: isConnected
-                      ? AfsTheme.neonGreen.withValues(alpha: 0.08)
-                      : AfsTheme.errorColor.withValues(alpha: 0.08),
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(
+              // ── Backend connection toggle strip ──
+              GestureDetector(
+                onTap: onConnectionToggle,
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 300),
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
                     color: isConnected
-                        ? AfsTheme.neonGreen.withValues(alpha: 0.25)
-                        : AfsTheme.errorColor.withValues(alpha: 0.25),
+                        ? AfsTheme.neonGreen.withValues(alpha: 0.08)
+                        : AfsTheme.errorColor.withValues(alpha: 0.08),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(
+                      color: isConnected
+                          ? AfsTheme.neonGreen.withValues(alpha: 0.25)
+                          : AfsTheme.errorColor.withValues(alpha: 0.25),
+                    ),
                   ),
-                ),
-                child: Row(
-                  children: [
-                    Container(
-                      width: 8,
-                      height: 8,
-                      decoration: BoxDecoration(
-                        color: isConnected
-                            ? AfsTheme.neonGreen
-                            : AfsTheme.errorColor,
-                        shape: BoxShape.circle,
-                        boxShadow: [
-                          BoxShadow(
-                            color: (isConnected
-                                    ? AfsTheme.neonGreen
-                                    : AfsTheme.errorColor)
-                                .withValues(alpha: 0.7),
-                            blurRadius: 6,
-                          )
-                        ],
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    Flexible(
-                      child: Text(
-                        isConnected ? 'Backend Online' : 'Backend Offline',
-                        style: AfsTheme.monoSmall(
-                          isConnected ? AfsTheme.neonGreen : AfsTheme.errorColor,
+                  child: Row(
+                    children: [
+                      Container(
+                        width: 8,
+                        height: 8,
+                        decoration: BoxDecoration(
+                          color: isConnected
+                              ? AfsTheme.neonGreen
+                              : AfsTheme.errorColor,
+                          shape: BoxShape.circle,
+                          boxShadow: [
+                            BoxShadow(
+                              color: (isConnected
+                                      ? AfsTheme.neonGreen
+                                      : AfsTheme.errorColor)
+                                  .withValues(alpha: 0.7),
+                              blurRadius: 6,
+                            )
+                          ],
                         ),
-                        overflow: TextOverflow.ellipsis,
                       ),
-                    ),
-                  ],
+                      const SizedBox(width: 8),
+                      Flexible(
+                        child: Text(
+                          isConnected ? 'Backend Online' : 'Backend Offline',
+                          style: AfsTheme.monoSmall(
+                            isConnected ? AfsTheme.neonGreen : AfsTheme.errorColor,
+                          ),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      const SizedBox(width: 6),
+                      Icon(
+                        isConnected
+                            ? Icons.power_settings_new_rounded
+                            : Icons.power_off_rounded,
+                        size: 14,
+                        color: isConnected
+                            ? AfsTheme.neonGreen.withValues(alpha: 0.6)
+                            : AfsTheme.errorColor.withValues(alpha: 0.7),
+                      ),
+                    ],
+                  ),
                 ),
               ),
             ],
@@ -885,32 +1192,7 @@ class _HudSidebar extends StatelessWidget {
 }
 
 // ── Bounding Box Painter ──────────────────────────────────────────────────────
-class _NavSidebarItem extends StatelessWidget {
-  final IconData icon;
-  final String label;
-  final bool isActive;
-  const _NavSidebarItem({required this.icon, required this.label, this.isActive = false});
 
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
-      decoration: BoxDecoration(
-        color: isActive ? AfsTheme.surfaceHigh : Colors.transparent,
-        border: Border(
-          left: BorderSide(color: isActive ? AfsTheme.neonGreen : Colors.transparent, width: 3),
-        ),
-      ),
-      child: Row(
-        children: [
-          Icon(icon, size: 20, color: isActive ? AfsTheme.neonGreen : AfsTheme.ashGray.withAlpha(120)),
-          const SizedBox(width: 16),
-          Text(label, style: AfsTheme.monoSmall(isActive ? AfsTheme.neonGreen : AfsTheme.ashGray)),
-        ],
-      ),
-    );
-  }
-}
 
 class BoundingBoxPainter extends CustomPainter {
   final Map<String, dynamic>? data;
