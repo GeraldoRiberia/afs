@@ -10,7 +10,7 @@ class AudioProcessor:
     def __init__(self, model_dir: str):
         self.model_dir = Path(model_dir)
         self.audio_dir = self.model_dir / "audio_recordings"
-        self.audio_dir.mkdir(exist_ok=True)
+        self.audio_dir.mkdir(parents=True, exist_ok=True)
         
         self.active_streams = {}
     
