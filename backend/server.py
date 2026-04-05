@@ -322,10 +322,15 @@ async def startup_event():
     mongo_uri = os.getenv("MONGODB_URI", "mongodb://localhost:27017")
     mongo_db_name = os.getenv("MONGODB_DB", "afs")
 
-    mongo_client = AsyncMongoClient(mongo_uri)
-    users_collection = mongo_client[mongo_db_name]["users"]
-    await users_collection.create_index("email", unique=True)
-    logger.info("Connected to MongoDB and initialized users index.")
+    try:
+        mongo_client = AsyncMongoClient(mongo_uri, serverSelectionTimeoutMS=5000)
+        users_collection = mongo_client[mongo_db_name]["users"]
+        await users_collection.create_index("email", unique=True)
+        logger.info("Connected to MongoDB and initialized users index.")
+    except Exception as e:
+        logger.warning(f"MongoDB connection failed: {e}. Running without authentication.")
+        mongo_client = None
+        users_collection = None
 
     asyncio.create_task(vcam_generator_loop())
 
