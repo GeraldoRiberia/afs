@@ -6,6 +6,7 @@ import base64
 
 # Test locally - change to HF URL when deployed
 BASE_URL = "localhost:8000"
+# BASE_URL = "localhost:7860"
 # BASE_URL = "arnavam-afs-backend.hf.space"
 
 async def test_audio():
