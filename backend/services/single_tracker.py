@@ -17,7 +17,7 @@ class SingleTracker:
         # Configuration matches face_model.py
         # self.base_dir = "/Users/adisankarlalan/Documents/GitHub/afs-fl/Model"
         base_dir = Path(__file__).parent
-        self.base_dir = base_dir.parent.parent / "Model" 
+        self.base_dir = base_dir.parent / "Model" 
         print(self.base_dir,"base")
 
         self.reference_video_path = os.path.join(self.base_dir, 'my_scan.mp4')
