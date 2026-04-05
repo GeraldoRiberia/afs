@@ -6,6 +6,7 @@ numpy==2.4.4
 scipy==1.17.1
 ultralytics==8.4.33
 deepface==0.0.99
+tf-keras
 pymongo==4.16.0
 passlib[bcrypt]==1.7.4
 bcrypt==5.0.0
