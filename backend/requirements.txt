@@ -3,7 +3,7 @@ uvicorn
 websockets
 opencv-python
 numpy
-scipy<1.14.0
+scipy>=1.14.1
 ultralytics
 deepface
 pymongo>=4.9.0
