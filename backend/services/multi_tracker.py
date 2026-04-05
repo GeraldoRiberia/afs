@@ -13,11 +13,11 @@ class MultiTracker:
         
         # Determine paths
 
-        # Get the directory containing the current script (server.py)
+        # Get the directory containing the current script (multi_tracker.py)
         base_dir = Path(__file__).parent.parent
 
-        # Go up one level (to afs/), then into Model/
-        detector_model_path = base_dir.parent / "Model" / "yolov8n-face.pt"
+        # Model folder is now inside backend/
+        detector_model_path = base_dir / "Model" / "yolov8n-face.pt"
         print(detector_model_path,"de")
         
         try:
