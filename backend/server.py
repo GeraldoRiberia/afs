@@ -316,6 +316,15 @@ async def vcam_generator_loop():
             logger.error(f"vcam loop error: {e}")
         await asyncio.sleep(1/30)
 
+@app.get("/")
+async def health_check():
+    """Health check endpoint."""
+    return {
+        "status": "ok",
+        "service": "AFS Tracking Backend",
+        "mongodb": "connected" if users_collection is not None else "disconnected"
+    }
+
 @app.on_event("startup")
 async def startup_event():
     global mongo_client, users_collection
