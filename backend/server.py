@@ -75,6 +75,9 @@ audio_processor = AudioProcessor(str(MODEL_DIR))
 # MongoDB state
 mongo_client: AsyncMongoClient | None = None
 users_collection = None
+audio_recordings_collection = None
+audio_settings_collection = None
+audio_angles_collection = None
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
@@ -319,29 +322,76 @@ async def vcam_generator_loop():
 @app.get("/")
 async def health_check():
     """Health check endpoint."""
+    status_db = "connected" if users_collection is not None else "disconnected"
     return {
         "status": "ok",
         "service": "AFS Tracking Backend",
-        "mongodb": "connected" if users_collection is not None else "disconnected"
+        "mongodb": status_db
     }
+
+async def mongodb_reconnect_loop():
+    """Background task to attempt MongoDB reconnection if disconnected."""
+    global mongo_client, users_collection, audio_recordings_collection, audio_settings_collection
+    while True:
+        if users_collection is None:
+            mongo_uri = os.getenv("MONGODB_URI", "mongodb://localhost:27017")
+            mongo_db_name = os.getenv("MONGODB_DB", "afs")
+            try:
+                logger.info("Attempting to reconnect to MongoDB...")
+                client = AsyncMongoClient(mongo_uri, serverSelectionTimeoutMS=5000)
+                # Ping to force connection verification
+                await client.admin.command('ping')
+                
+                # Re-initialize
+                mongo_client = client
+                db = mongo_client[mongo_db_name]
+                users_collection = db["users"]
+                audio_recordings_collection = db["audio_recordings"]
+                audio_settings_collection = db["audio_settings"]
+                audio_angles_collection = db["audio_angles"]
+                
+                await users_collection.create_index("email", unique=True)
+                logger.info("Successfully reconnected to MongoDB.")
+            except Exception as e:
+                logger.error(f"MongoDB reconnection failed: {e}")
+                mongo_client = None
+                users_collection = None
+                audio_recordings_collection = None
+                audio_settings_collection = None
+                audio_angles_collection = None
+        
+        # Wait before next check (e.g., 10 seconds)
+        await asyncio.sleep(10)
 
 @app.on_event("startup")
 async def startup_event():
-    global mongo_client, users_collection
+    global mongo_client, users_collection, audio_recordings_collection, audio_settings_collection, audio_angles_collection
     mongo_uri = os.getenv("MONGODB_URI", "mongodb://localhost:27017")
     mongo_db_name = os.getenv("MONGODB_DB", "afs")
 
     try:
         mongo_client = AsyncMongoClient(mongo_uri, serverSelectionTimeoutMS=5000)
-        users_collection = mongo_client[mongo_db_name]["users"]
+        # Ping to force connection verification
+        await mongo_client.admin.command('ping')
+        
+        db = mongo_client[mongo_db_name]
+        users_collection = db["users"]
+        audio_recordings_collection = db["audio_recordings"]
+        audio_settings_collection = db["audio_settings"]
+        audio_angles_collection = db["audio_angles"]
+        
         await users_collection.create_index("email", unique=True)
-        logger.info("Connected to MongoDB and initialized users index.")
+        logger.info("Connected to MongoDB and initialized collections.")
     except Exception as e:
-        logger.warning(f"MongoDB connection failed: {e}. Running without authentication.")
+        logger.warning(f"MongoDB connection failed on startup: {e}. Starting reconnection loop.")
         mongo_client = None
         users_collection = None
+        audio_recordings_collection = None
+        audio_settings_collection = None
+        audio_angles_collection = None
 
     asyncio.create_task(vcam_generator_loop())
+    asyncio.create_task(mongodb_reconnect_loop())
 
 
 @app.on_event("shutdown")
@@ -792,35 +842,34 @@ async def get_audio_angles():
 async def upload_audio_file(
     file: UploadFile = File(...)
 ):
-    """Upload recorded audio file from frontend."""
+    """Upload recorded audio file from frontend and save to MongoDB."""
     try:
-        audio_dir = MODEL_DIR / "audio_recordings"
-        audio_dir.mkdir(parents=True, exist_ok=True)
+        # Read file content for DB persistence
+        file_content = await file.read()
         
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        ext = Path(file.filename).suffix
-        if not ext:
-            ext = ".wav"
-        
-        file_path = audio_dir / f"uploaded_audio_{timestamp}{ext}"
-        
-        with open(file_path, 'wb') as f:
-            shutil.copyfileobj(file.file, f)
+        if audio_recordings_collection is not None:
+            await audio_recordings_collection.insert_one({
+                "filename": file.filename,
+                "content": file_content, # Saved as binary in MongoDB
+                "content_type": file.content_type,
+                "timestamp": datetime.utcnow()
+            })
             
         return {
             "ok": True,
-            "message": "Audio file uploaded successfully",
-            "filename": str(file_path.name)
+            "message": "Audio file saved to database successfully",
+            "filename": file.filename,
+            "size": len(file_content)
         }
     except Exception as e:
-        logger.error(f"Error uploading audio: {e}")
+        logger.error(f"Error saving audio to DB: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/audio/set-angle")
 async def set_desired_angle(
     angle: float = Form(...)
 ):
-    """Send a desired angle to the audio processing system."""
+    """Send a desired angle to the audio processing system and persist to MongoDB."""
     try:
         if not (0 <= angle <= 360):
             raise HTTPException(
@@ -828,24 +877,70 @@ async def set_desired_angle(
                 detail="Angle must be between 0 and 360 degrees"
             )
         
-        audio_dir = MODEL_DIR / "audio_recordings"
-        audio_dir.mkdir(parents=True, exist_ok=True)
+        if audio_angles_collection is not None:
+            await audio_angles_collection.update_one(
+                {"key": "latest_angle"},
+                {"$set": {"value": angle, "updated_at": datetime.utcnow()}},
+                upsert=True
+            )
         
-        desired_angle_file = audio_dir / "desired_angle.txt"
-        with open(desired_angle_file, 'w') as f:
-            f.write(f"{angle}\n")
-        
-        logger.info(f"Set desired angle {angle}°")
+        logger.info(f"Set and persisted desired angle {angle}° to DB")
         
         return {
             "ok": True,
-            "message": f"Desired angle set to {angle}°",
+            "message": f"Desired angle set to {angle}° and saved to DB",
             "angle": angle
         }
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error setting angle: {e}")
+        logger.error(f"Error setting angle in DB: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/audio/settings")
+async def get_audio_settings():
+    """Retrieve all audio settings from MongoDB."""
+    try:
+        if audio_settings_collection is None:
+            return {"ok": False, "message": "Database not connected"}
+        
+        cursor = audio_settings_collection.find({}, {"_id": 0})
+        settings_list = await cursor.to_list(length=100)
+        
+        # Convert list to dictionary
+        settings_dict = {s["key"]: s["value"] for s in settings_list if "key" in s}
+        
+        return {
+            "ok": True,
+            "settings": settings_dict
+        }
+    except Exception as e:
+        logger.error(f"Error retrieving audio settings: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/audio/settings")
+async def update_audio_settings(
+    settings: dict = Body(...)
+):
+    """Update general audio settings in MongoDB."""
+    try:
+        if audio_settings_collection is None:
+            raise HTTPException(status_code=503, detail="Database not connected")
+        
+        for key, value in settings.items():
+            await audio_settings_collection.update_one(
+                {"key": key},
+                {"$set": {"value": value, "updated_at": datetime.utcnow()}},
+                upsert=True
+            )
+        
+        return {
+            "ok": True,
+            "message": "Audio settings updated successfully",
+            "updated_keys": list(settings.keys())
+        }
+    except Exception as e:
+        logger.error(f"Error updating audio settings: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
