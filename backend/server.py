@@ -729,19 +729,36 @@ async def list_audio_recordings(current_user: UserPublic = Depends(get_current_u
         logger.error(f"Error listing recordings: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/api/audio/angles/{session_id}")
-async def get_audio_angles(
-    session_id: str
-):
-    """Get angle metadata for a specific audio session."""
+@app.get("/api/audio/active-sessions")
+async def get_active_sessions():
+    """Get currently active audio recording sessions."""
     try:
-        metadata_file = MODEL_DIR / "audio_recordings" / f"audio_{session_id}_metadata.txt"
+        sessions = list(audio_processor.active_streams.keys())
+        return {
+            "ok": True,
+            "active_sessions": sessions,
+            "count": len(sessions)
+        }
+    except Exception as e:
+        logger.error(f"Error getting active sessions: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/audio/angles")
+async def get_audio_angles():
+    """Get angle metadata for the latest audio session."""
+    try:
+        audio_dir = MODEL_DIR / "audio_recordings"
+        metadata_files = list(audio_dir.glob("*_metadata.txt"))
         
-        if not metadata_file.exists():
+        if not metadata_files:
             raise HTTPException(
                 status_code=404,
-                detail=f"No metadata found for session {session_id}"
+                detail="No metadata found"
             )
+        
+        # Get the most recently modified metadata file
+        import os
+        metadata_file = max(metadata_files, key=os.path.getmtime)
         
         angles_data = []
         with open(metadata_file, 'r') as f:
@@ -761,58 +778,46 @@ async def get_audio_angles(
         
         return {
             "ok": True,
-            "session_id": session_id,
+            "file": metadata_file.name,
             "angles": angles_data,
             "count": len(angles_data)
         }
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error retrieving angles for session {session_id}: {e}")
+        logger.error(f"Error retrieving angles: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/api/audio/download/{session_id}")
-async def download_audio_file(
-    session_id: str
+@app.post("/api/audio/upload")
+async def upload_audio_file(
+    file: UploadFile = File(...)
 ):
-    """Download recorded audio file for a specific session."""
+    """Upload recorded audio file from frontend."""
     try:
-        # Find the audio file matching this session_id
         audio_dir = MODEL_DIR / "audio_recordings"
+        audio_dir.mkdir(parents=True, exist_ok=True)
         
-        if not audio_dir.exists():
-            raise HTTPException(status_code=404, detail="No audio recordings found")
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        ext = Path(file.filename).suffix
+        if not ext:
+            ext = ".wav"
         
-        # Search for the file with this session_id
-        audio_file = None
-        for file in audio_dir.glob(f"audio_{session_id}_*.wav"):
-            # Skip metadata files
-            if not str(file).endswith("_metadata.txt"):
-                audio_file = file
-                break
+        file_path = audio_dir / f"uploaded_audio_{timestamp}{ext}"
         
-        if not audio_file or not audio_file.exists():
-            raise HTTPException(
-                status_code=404,
-                detail=f"Audio file not found for session {session_id}"
-            )
-        
-        return StreamingResponse(
-            iter([await asyncio.get_event_loop().run_in_executor(None, audio_file.read_bytes)]),
-            media_type="audio/wav",
-            headers={
-                "Content-Disposition": f"attachment; filename={audio_file.name}"
-            }
-        )
-    except HTTPException:
-        raise
+        with open(file_path, 'wb') as f:
+            shutil.copyfileobj(file.file, f)
+            
+        return {
+            "ok": True,
+            "message": "Audio file uploaded successfully",
+            "filename": str(file_path.name)
+        }
     except Exception as e:
-        logger.error(f"Error downloading audio for session {session_id}: {e}")
+        logger.error(f"Error uploading audio: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/audio/set-angle/{session_id}")
+@app.post("/api/audio/set-angle")
 async def set_desired_angle(
-    session_id: str,
     angle: float = Form(...)
 ):
     """Send a desired angle to the audio processing system."""
@@ -823,33 +828,24 @@ async def set_desired_angle(
                 detail="Angle must be between 0 and 360 degrees"
             )
         
-        # Check if session exists
         audio_dir = MODEL_DIR / "audio_recordings"
-        session_exists = any(audio_dir.glob(f"audio_{session_id}_*.wav"))
+        audio_dir.mkdir(parents=True, exist_ok=True)
         
-        if not session_exists:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Session {session_id} not found"
-            )
-        
-        # Store desired angle (append to metadata or create angle request file)
-        desired_angle_file = audio_dir / f"audio_{session_id}_desired_angle.txt"
+        desired_angle_file = audio_dir / "desired_angle.txt"
         with open(desired_angle_file, 'w') as f:
             f.write(f"{angle}\n")
         
-        logger.info(f"Set desired angle {angle}° for session {session_id}")
+        logger.info(f"Set desired angle {angle}°")
         
         return {
             "ok": True,
             "message": f"Desired angle set to {angle}°",
-            "session_id": session_id,
             "angle": angle
         }
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error setting angle for session {session_id}: {e}")
+        logger.error(f"Error setting angle: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
