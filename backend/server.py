@@ -658,6 +658,11 @@ async def websocket_audio_stream(websocket: WebSocket, session_id: str):
     await websocket.accept()
     logger.info(f"Audio WebSocket connection established for session {session_id}")
     
+    # Auto-create stream if not exists
+    if session_id not in audio_processor.active_streams:
+        audio_processor.create_audio_stream(session_id)
+        logger.info(f"Auto-created audio stream for session {session_id}")
+    
     try:
         while True:
             message = await websocket.receive()
