@@ -710,5 +710,128 @@ async def list_audio_recordings(current_user: UserPublic = Depends(get_current_u
         logger.error(f"Error listing recordings: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/api/audio/angles/{session_id}")
+async def get_audio_angles(
+    session_id: str
+):
+    """Get angle metadata for a specific audio session."""
+    try:
+        metadata_file = MODEL_DIR / "audio_recordings" / f"audio_{session_id}_metadata.txt"
+        
+        if not metadata_file.exists():
+            raise HTTPException(
+                status_code=404,
+                detail=f"No metadata found for session {session_id}"
+            )
+        
+        angles_data = []
+        with open(metadata_file, 'r') as f:
+            lines = f.readlines()
+            # Skip header if present
+            start_idx = 1 if lines and 'timestamp' in lines[0] else 0
+            for line in lines[start_idx:]:
+                if line.strip():
+                    parts = line.strip().split(',')
+                    if len(parts) >= 2:
+                        try:
+                            timestamp = float(parts[0])
+                            angle = float(parts[1])
+                            angles_data.append({"timestamp": timestamp, "angle": angle})
+                        except ValueError:
+                            continue
+        
+        return {
+            "ok": True,
+            "session_id": session_id,
+            "angles": angles_data,
+            "count": len(angles_data)
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error retrieving angles for session {session_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/audio/download/{session_id}")
+async def download_audio_file(
+    session_id: str
+):
+    """Download recorded audio file for a specific session."""
+    try:
+        # Find the audio file matching this session_id
+        audio_dir = MODEL_DIR / "audio_recordings"
+        
+        if not audio_dir.exists():
+            raise HTTPException(status_code=404, detail="No audio recordings found")
+        
+        # Search for the file with this session_id
+        audio_file = None
+        for file in audio_dir.glob(f"audio_{session_id}_*.wav"):
+            # Skip metadata files
+            if not str(file).endswith("_metadata.txt"):
+                audio_file = file
+                break
+        
+        if not audio_file or not audio_file.exists():
+            raise HTTPException(
+                status_code=404,
+                detail=f"Audio file not found for session {session_id}"
+            )
+        
+        return StreamingResponse(
+            iter([await asyncio.get_event_loop().run_in_executor(None, audio_file.read_bytes)]),
+            media_type="audio/wav",
+            headers={
+                "Content-Disposition": f"attachment; filename={audio_file.name}"
+            }
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error downloading audio for session {session_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/audio/set-angle/{session_id}")
+async def set_desired_angle(
+    session_id: str,
+    angle: float = Form(...)
+):
+    """Send a desired angle to the audio processing system."""
+    try:
+        if not (0 <= angle <= 360):
+            raise HTTPException(
+                status_code=400,
+                detail="Angle must be between 0 and 360 degrees"
+            )
+        
+        # Check if session exists
+        audio_dir = MODEL_DIR / "audio_recordings"
+        session_exists = any(audio_dir.glob(f"audio_{session_id}_*.wav"))
+        
+        if not session_exists:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Session {session_id} not found"
+            )
+        
+        # Store desired angle (append to metadata or create angle request file)
+        desired_angle_file = audio_dir / f"audio_{session_id}_desired_angle.txt"
+        with open(desired_angle_file, 'w') as f:
+            f.write(f"{angle}\n")
+        
+        logger.info(f"Set desired angle {angle}° for session {session_id}")
+        
+        return {
+            "ok": True,
+            "message": f"Desired angle set to {angle}°",
+            "session_id": session_id,
+            "angle": angle
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error setting angle for session {session_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 if __name__ == "__main__":
     uvicorn.run("server:app", host="0.0.0.0", port=8000, reload=True)

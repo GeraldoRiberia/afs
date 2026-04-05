@@ -179,6 +179,80 @@ or
 }
 ```
 
+### 5. Get Angle Metadata for Session
+**Endpoint:** `GET /api/audio/angles/{session_id}`
+
+**Description:** Retrieve angle data collected during an audio streaming session.
+
+**Authentication:** Required (JWT token)
+
+**Parameters:**
+- `session_id` (path parameter): The UUID of the audio session
+
+**Response:**
+```json
+{
+  "ok": true,
+  "session_id": "uuid-here",
+  "angles": [
+    {"timestamp": 0.000, "angle": 45.50},
+    {"timestamp": 0.064, "angle": 46.20},
+    {"timestamp": 0.128, "angle": 47.00}
+  ],
+  "count": 3
+}
+```
+
+### 6. Download Audio File
+**Endpoint:** `GET /api/audio/download/{session_id}`
+
+**Description:** Download the recorded audio file (.wav) for a specific session.
+
+**Authentication:** Required (JWT token)
+
+**Parameters:**
+- `session_id` (path parameter): The UUID of the audio session
+
+**Response:**
+- Binary WAV file with `Content-Type: audio/wav`
+- File download with appropriate filename header
+
+### 7. Set Desired Angle
+**Endpoint:** `POST /api/audio/set-angle/{session_id}`
+
+**Description:** Send a desired/target angle to the audio processing backend for a session.
+
+**Authentication:** Required (JWT token)
+
+**Parameters:**
+- `session_id` (path parameter): The UUID of the audio session
+- `angle` (form parameter, required): Desired angle in degrees (0-360)
+
+**Request:**
+```
+POST /api/audio/set-angle/session-uuid-here
+Content-Type: multipart/form-data
+
+angle=45.5
+```
+
+**Response:**
+```json
+{
+  "ok": true,
+  "message": "Desired angle set to 45.5°",
+  "session_id": "uuid-here",
+  "angle": 45.5
+}
+```
+
+**Error Response (Invalid Angle):**
+```json
+{
+  "detail": "Angle must be between 0 and 360 degrees"
+}
+```
+
 ## File Storage
 
 All uploaded files and processed data are stored in the `/Model/` directory:
@@ -240,4 +314,28 @@ async def stream_audio():
         await websocket.send(json.dumps({"command": "stop"}))
 
 asyncio.run(stream_audio())
+
+# 4. Get angle data for a session
+response = requests.get(
+    f"http://localhost:8000/api/audio/angles/{session_id}",
+    headers={"Authorization": f"Bearer {token}"}
+)
+angles = response.json()["angles"]
+print(f"Recorded {len(angles)} angle measurements")
+
+# 5. Download recorded audio
+response = requests.get(
+    f"http://localhost:8000/api/audio/download/{session_id}",
+    headers={"Authorization": f"Bearer {token}"}
+)
+with open("downloaded_audio.wav", "wb") as f:
+    f.write(response.content)
+
+# 6. Send desired angle to backend
+response = requests.post(
+    f"http://localhost:8000/api/audio/set-angle/{session_id}",
+    data={"angle": 90.0},
+    headers={"Authorization": f"Bearer {token}"}
+)
+print(response.json())
 ```
