@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../theme.dart';
 import 'signup_screen.dart';
 import '../main.dart' show CameraScreen;
+import '../services/auth_service.dart';
 
 /// Matte Obsidian Login Screen (Desktop) — Stitch: a62b41071a5a447f83c047f5b181d193
 class LoginScreen extends StatefulWidget {
@@ -29,11 +30,28 @@ class _LoginScreenState extends State<LoginScreen> {
   Future<void> _signIn() async {
     if (!_formKey.currentState!.validate()) return;
     setState(() => _loading = true);
-    await Future.delayed(const Duration(milliseconds: 800));
-    if (mounted) {
+    try {
+      await AuthService.instance.login(
+        email: _emailCtrl.text.trim(),
+        password: _passCtrl.text,
+      );
+
+      if (!mounted) return;
       Navigator.of(context).pushReplacement(
         MaterialPageRoute(builder: (_) => const CameraScreen()),
       );
+    } on AuthException catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(e.message)),
+      );
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Could not connect to backend.')),
+      );
+    } finally {
+      if (mounted) setState(() => _loading = false);
     }
   }
 

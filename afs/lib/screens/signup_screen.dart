@@ -3,6 +3,7 @@ import '../theme.dart';
 import 'shared_widgets.dart';
 import 'login_screen.dart';
 import '../main.dart' show CameraScreen;
+import '../services/auth_service.dart';
 
 /// SignUp (Desktop) — Stitch: 3000c88128914d3995b2e8cb4ee8ed7c
 /// Split layout: left hero branding, right form fields
@@ -33,11 +34,29 @@ class _SignUpScreenState extends State<SignUpScreen> {
   Future<void> _createAccount() async {
     if (!_formKey.currentState!.validate()) return;
     setState(() => _loading = true);
-    await Future.delayed(const Duration(milliseconds: 900));
-    if (mounted) {
+    try {
+      await AuthService.instance.register(
+        fullName: _nameCtrl.text.trim(),
+        email: _emailCtrl.text.trim(),
+        password: _passCtrl.text,
+      );
+
+      if (!mounted) return;
       Navigator.of(context).pushReplacement(
         MaterialPageRoute(builder: (_) => const CameraScreen()),
       );
+    } on AuthException catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(e.message)),
+      );
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Could not connect to backend.')),
+      );
+    } finally {
+      if (mounted) setState(() => _loading = false);
     }
   }
 

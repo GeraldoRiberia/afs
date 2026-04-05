@@ -1,19 +1,35 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, status, Depends, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 import uvicorn
 import cv2
 import numpy as np
-import base64
 import json
 import logging
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
+from datetime import datetime, timedelta
 import threading
+import os
+import base64
+import hashlib
+from pydantic import BaseModel, Field
+from pymongo import AsyncMongoClient
+from passlib.context import CryptContext
+from jose import JWTError, jwt
+from dotenv import load_dotenv
+from pathlib import Path
+import shutil
+import uuid
 
 from services.single_tracker import SingleTracker
 from services.multi_tracker import MultiTracker
+from services.face_recognition import FaceRecognitionService
+from services.audio_processing import AudioProcessor
+
+# Load environment variables from .env file
+load_dotenv()
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -49,9 +65,125 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Initialize trackers
+# Initialize trackers and services
+MODEL_DIR = Path(__file__).parent.parent / "Model"
 single_tracker = SingleTracker()
 multi_tracker = MultiTracker()
+face_service = FaceRecognitionService(str(MODEL_DIR))
+audio_processor = AudioProcessor(str(MODEL_DIR))
+
+# MongoDB state
+mongo_client: AsyncMongoClient | None = None
+users_collection = None
+
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+# JWT Configuration
+SECRET_KEY = os.getenv("JWT_SECRET_KEY", "your-secret-key-change-in-production")
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7  # 7 days
+
+security = HTTPBearer()
+
+
+class RegisterRequest(BaseModel):
+    full_name: str = Field(min_length=2, max_length=80)
+    email: str = Field(min_length=5, max_length=254)
+    password: str = Field(min_length=8, max_length=128)
+
+
+class LoginRequest(BaseModel):
+    email: str = Field(min_length=5, max_length=254)
+    password: str = Field(min_length=8, max_length=128)
+
+
+class UserPublic(BaseModel):
+    id: str
+    full_name: str
+    email: str
+
+
+class AuthResponse(BaseModel):
+    ok: bool
+    message: str
+    user: UserPublic
+    token: str
+
+
+def normalize_email(email: str) -> str:
+    return email.strip().lower()
+
+
+def get_password_hash(password: str) -> str:
+    # Hash password with SHA256 first to handle any length, then use bcrypt
+    password_hash = hashlib.sha256(password.encode('utf-8')).hexdigest()
+    return pwd_context.hash(password_hash)
+
+
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    # Apply same SHA256 transformation before verifying
+    password_hash = hashlib.sha256(plain_password.encode('utf-8')).hexdigest()
+    return pwd_context.verify(password_hash, hashed_password)
+
+
+def require_users_collection():
+    if users_collection is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database is not initialized yet. Please retry.",
+        )
+    return users_collection
+
+
+def create_access_token(data: dict, expires_delta: timedelta | None = None):
+    to_encode = data.copy()
+    if expires_delta:
+        expire = datetime.utcnow() + expires_delta
+    else:
+        expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    to_encode.update({"exp": expire})
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return encoded_jwt
+
+
+async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    collection = require_users_collection()
+    token = credentials.credentials
+    
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        user_id: str = payload.get("sub")
+        if user_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid authentication credentials",
+            )
+    except JWTError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired token",
+        )
+    
+    from bson import ObjectId
+    try:
+        user_doc = await collection.find_one({"_id": ObjectId(user_id)})
+    except:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not found",
+        )
+    
+    if user_doc is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not found",
+        )
+    
+    return UserPublic(
+        id=str(user_doc["_id"]),
+        full_name=user_doc["full_name"],
+        email=user_doc["email"],
+    )
 
 def decode_binary_image(img_data: bytes):
     """Decodes raw JPEG bytes into an OpenCV numpy array."""
@@ -186,7 +318,94 @@ async def vcam_generator_loop():
 
 @app.on_event("startup")
 async def startup_event():
+    global mongo_client, users_collection
+    mongo_uri = os.getenv("MONGODB_URI", "mongodb://localhost:27017")
+    mongo_db_name = os.getenv("MONGODB_DB", "afs")
+
+    mongo_client = AsyncMongoClient(mongo_uri)
+    users_collection = mongo_client[mongo_db_name]["users"]
+    await users_collection.create_index("email", unique=True)
+    logger.info("Connected to MongoDB and initialized users index.")
+
     asyncio.create_task(vcam_generator_loop())
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    global mongo_client
+    if mongo_client is not None:
+        mongo_client.close()
+        logger.info("MongoDB connection closed.")
+
+
+@app.post("/auth/register", response_model=AuthResponse)
+async def register(payload: RegisterRequest):
+    collection = require_users_collection()
+    email = normalize_email(payload.email)
+
+    existing_user = await collection.find_one({"email": email})
+    if existing_user:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="An account with this email already exists.",
+        )
+
+    now = datetime.utcnow()
+    user_doc = {
+        "full_name": payload.full_name.strip(),
+        "email": email,
+        "password_hash": get_password_hash(payload.password),
+        "created_at": now,
+        "updated_at": now,
+    }
+    insert_result = await collection.insert_one(user_doc)
+    
+    user_id = str(insert_result.inserted_id)
+    access_token = create_access_token(data={"sub": user_id})
+
+    return AuthResponse(
+        ok=True,
+        message="Account created successfully.",
+        user=UserPublic(
+            id=user_id,
+            full_name=user_doc["full_name"],
+            email=user_doc["email"],
+        ),
+        token=access_token,
+    )
+
+
+@app.post("/auth/login", response_model=AuthResponse)
+async def login(payload: LoginRequest):
+    collection = require_users_collection()
+    email = normalize_email(payload.email)
+
+    user_doc = await collection.find_one({"email": email})
+    if not user_doc or not verify_password(payload.password, user_doc["password_hash"]):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid email or password.",
+        )
+    
+    user_id = str(user_doc["_id"])
+    access_token = create_access_token(data={"sub": user_id})
+
+    return AuthResponse(
+        ok=True,
+        message="Login successful.",
+        user=UserPublic(
+            id=user_id,
+            full_name=user_doc["full_name"],
+            email=user_doc["email"],
+        ),
+        token=access_token,
+    )
+
+
+@app.get("/auth/verify", response_model=UserPublic)
+async def verify_token(current_user: UserPublic = Depends(get_current_user)):
+    """Verify JWT token and return user info"""
+    return current_user
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
@@ -311,6 +530,185 @@ async def websocket_endpoint(websocket: WebSocket):
             video_writer.release()
             video_writer = None
         is_recording = False
+
+# === FACE RECOGNITION ENDPOINTS ===
+
+@app.post("/api/face/upload-video")
+async def upload_reference_video(
+    file: UploadFile = File(...),
+    current_user: UserPublic = Depends(get_current_user)
+):
+    """Upload a 360-degree reference video for face recognition training."""
+    if not file.filename.endswith(('.mp4', '.avi', '.mov', '.mkv')):
+        raise HTTPException(status_code=400, detail="Invalid video format. Use mp4, avi, mov, or mkv")
+    
+    video_path = MODEL_DIR / "my_scan.mp4"
+    
+    try:
+        with open(video_path, 'wb') as f:
+            shutil.copyfileobj(file.file, f)
+        
+        embeddings, num_frames = await asyncio.get_event_loop().run_in_executor(
+            executor, face_service.extract_embeddings_from_video, str(video_path)
+        )
+        
+        face_service.save_embeddings_cache(embeddings, str(video_path), num_frames)
+        
+        return {
+            "ok": True,
+            "message": "Video processed successfully",
+            "frames_used": num_frames,
+            "embeddings_count": len(embeddings)
+        }
+    except Exception as e:
+        logger.error(f"Error processing video: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/face/upload-image")
+async def upload_reference_image(
+    file: UploadFile = File(...),
+    current_user: UserPublic = Depends(get_current_user)
+):
+    """Upload a reference image for face recognition."""
+    if not file.filename.endswith(('.jpg', '.jpeg', '.png')):
+        raise HTTPException(status_code=400, detail="Invalid image format. Use jpg, jpeg, or png")
+    
+    image_path = MODEL_DIR / f"ref_{file.filename}"
+    
+    try:
+        with open(image_path, 'wb') as f:
+            shutil.copyfileobj(file.file, f)
+        
+        embeddings = await asyncio.get_event_loop().run_in_executor(
+            executor, face_service.extract_embeddings_from_image, str(image_path)
+        )
+        
+        return {
+            "ok": True,
+            "message": "Image processed successfully",
+            "embeddings_count": len(embeddings),
+            "saved_path": str(image_path)
+        }
+    except Exception as e:
+        logger.error(f"Error processing image: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/face/cache-status")
+async def get_cache_status(current_user: UserPublic = Depends(get_current_user)):
+    """Get the current face recognition cache status."""
+    cache_data = face_service.load_embeddings_cache()
+    
+    if cache_data:
+        return {
+            "ok": True,
+            "cached": True,
+            "video_path": cache_data.get('video_path'),
+            "model_name": cache_data.get('model_name'),
+            "num_frames_used": cache_data.get('num_frames_used'),
+            "version": cache_data.get('version')
+        }
+    else:
+        return {
+            "ok": True,
+            "cached": False,
+            "message": "No cache found. Please upload a reference video or image."
+        }
+
+# === AUDIO STREAMING ENDPOINTS ===
+
+@app.post("/api/audio/start-stream")
+async def start_audio_stream(
+    sample_rate: int = Form(16000),
+    channels: int = Form(1),
+    current_user: UserPublic = Depends(get_current_user)
+):
+    """Start a new audio recording stream."""
+    session_id = str(uuid.uuid4())
+    
+    try:
+        filename = audio_processor.create_audio_stream(session_id, sample_rate, channels)
+        return {
+            "ok": True,
+            "session_id": session_id,
+            "filename": filename,
+            "sample_rate": sample_rate,
+            "channels": channels
+        }
+    except Exception as e:
+        logger.error(f"Error starting audio stream: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.websocket("/ws/audio/{session_id}")
+async def websocket_audio_stream(websocket: WebSocket, session_id: str):
+    """WebSocket endpoint for streaming audio with angle data."""
+    await websocket.accept()
+    logger.info(f"Audio WebSocket connection established for session {session_id}")
+    
+    try:
+        while True:
+            message = await websocket.receive()
+            
+            if "bytes" in message:
+                audio_data = message["bytes"]
+                audio_processor.write_audio_chunk(session_id, audio_data)
+                await websocket.send_json({"status": "received", "bytes": len(audio_data)})
+            
+            elif "text" in message:
+                try:
+                    payload = json.loads(message["text"])
+                    
+                    if "audio_data" in payload and "angle" in payload:
+                        audio_bytes = base64.b64decode(payload["audio_data"])
+                        angle = float(payload["angle"])
+                        audio_processor.write_audio_chunk(session_id, audio_bytes, angle)
+                        await websocket.send_json({"status": "received", "angle": angle})
+                    
+                    elif payload.get("command") == "stop":
+                        audio_processor.close_audio_stream(session_id)
+                        await websocket.send_json({"status": "stopped", "message": "Stream closed"})
+                        break
+                        
+                except json.JSONDecodeError:
+                    logger.error("Invalid JSON in audio stream")
+                    
+    except WebSocketDisconnect:
+        logger.info(f"Audio WebSocket client disconnected for session {session_id}")
+        if session_id in audio_processor.active_streams:
+            audio_processor.close_audio_stream(session_id)
+    except Exception as e:
+        logger.error(f"Audio WebSocket error: {e}")
+        if session_id in audio_processor.active_streams:
+            audio_processor.close_audio_stream(session_id)
+
+@app.post("/api/audio/stop-stream/{session_id}")
+async def stop_audio_stream(
+    session_id: str,
+    current_user: UserPublic = Depends(get_current_user)
+):
+    """Stop an active audio recording stream."""
+    try:
+        audio_processor.close_audio_stream(session_id)
+        return {
+            "ok": True,
+            "message": "Audio stream stopped successfully"
+        }
+    except Exception as e:
+        logger.error(f"Error stopping audio stream: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/audio/recordings")
+async def list_audio_recordings(current_user: UserPublic = Depends(get_current_user)):
+    """List all audio recordings."""
+    try:
+        recordings = audio_processor.get_audio_files()
+        return {
+            "ok": True,
+            "recordings": recordings,
+            "count": len(recordings)
+        }
+    except Exception as e:
+        logger.error(f"Error listing recordings: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     uvicorn.run("server:app", host="0.0.0.0", port=8000, reload=True)

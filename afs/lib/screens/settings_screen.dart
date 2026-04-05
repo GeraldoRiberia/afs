@@ -1,5 +1,5 @@
-import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:camera_macos/camera_macos.dart';
 import 'package:camera/camera.dart';
 import '../theme.dart';
@@ -35,6 +35,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
   late dynamic _localSelectedDevice;
   late dynamic _localSelectedAudio;
 
+  bool get _isMacOSPlatform =>
+      !kIsWeb && defaultTargetPlatform == TargetPlatform.macOS;
+
   @override
   void initState() {
     super.initState();
@@ -49,7 +52,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   String _videoDeviceName(dynamic device) {
-    if (Platform.isMacOS) {
+    if (_isMacOSPlatform) {
       final d = device as CameraMacOSDevice;
       return d.localizedName ?? 'Camera ${d.deviceId}';
     } else {
@@ -59,7 +62,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   String _audioDeviceName(dynamic device) {
-    if (Platform.isMacOS) {
+    if (_isMacOSPlatform) {
       final d = device as CameraMacOSDevice;
       return d.localizedName ?? 'Mic ${d.deviceId}';
     }
@@ -305,7 +308,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           const SizedBox(width: 6),
                           Expanded(
                             child: Text(
-                              Platform.isMacOS
+                                _isMacOSPlatform
                                   ? 'Audio is captured during recording. Device routing is system-level.'
                                   : 'Uses the device default microphone during recording.',
                               style: AfsTheme.labelSmall(

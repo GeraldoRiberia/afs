@@ -5,3 +5,8 @@ opencv-python
 numpy
 ultralytics
 deepface
+pymongo>=4.9.0
+passlib[bcrypt]
+bcrypt
+python-jose[cryptography]
+python-dotenv

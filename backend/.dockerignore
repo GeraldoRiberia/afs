@@ -1,0 +1,54 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# Environment variables
+.env
+.env.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Testing
+test/
+*.coverage
+htmlcov/
+.pytest_cache/
+
+# Git
+.git/
+.gitignore
+
+# UV lock file (runtime dependency)
+uv.lock
+
+# Python version file
+.python-version
+
+# Documentation (if not needed in container)
+API_DOCS.md
+REFACTORING_SUMMARY.md
+README.md
+
+# Logs
+*.log

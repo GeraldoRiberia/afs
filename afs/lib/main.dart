@@ -19,6 +19,7 @@ import 'widgets/hud_stat_tile.dart';
 import 'widgets/afs_controls_bar.dart';
 import 'screens/onboarding_screen.dart';
 import 'screens/login_screen.dart';
+import 'services/auth_service.dart';
 
 // Top level function for Isolate
 Future<Uint8List?> _processImageInIsolate(Map<String, dynamic> params) async {
@@ -44,9 +45,14 @@ enum TrackingMode {
   multi,  // Maps to objtrack.py
 }
 
+bool get _isMacOSPlatform =>
+    !kIsWeb && defaultTargetPlatform == TargetPlatform.macOS;
+bool get _isAndroidPlatform =>
+    !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  if (!Platform.isMacOS) {
+  if (!_isMacOSPlatform) {
     try {
       _mobileCameras = await availableCameras();
     } on CameraException catch (e) {
@@ -54,11 +60,15 @@ Future<void> main() async {
       _mobileCameras = [];
     }
   }
-  runApp(const MyApp());
+  
+  final isLoggedIn = await AuthService.instance.isLoggedIn();
+  runApp(MyApp(isLoggedIn: isLoggedIn));
 }
 
 class MyApp extends StatelessWidget {
-  const MyApp({super.key});
+  final bool isLoggedIn;
+  
+  const MyApp({super.key, required this.isLoggedIn});
 
   @override
   Widget build(BuildContext context) {
@@ -66,7 +76,7 @@ class MyApp extends StatelessWidget {
       title: 'AFS — Auto Framing Software',
       debugShowCheckedModeBanner: false,
       theme: AfsTheme.themeData,
-      home: const OnboardingScreen(),
+      home: isLoggedIn ? const CameraScreen() : const OnboardingScreen(),
     );
   }
 }
@@ -120,7 +130,7 @@ class _CameraScreenState extends State<CameraScreen> {
 
   // Backend address
   final String _backendUrl =
-      Platform.isAndroid ? 'ws://10.0.2.2:8000/ws' : 'ws://127.0.0.1:8000/ws';
+      _isAndroidPlatform ? 'ws://10.0.2.2:8000/ws' : 'ws://127.0.0.1:8000/ws';
 
   // ── Recording state ───────────────────────────────────────────────────────
   bool _isRecording = false;
@@ -298,7 +308,7 @@ class _CameraScreenState extends State<CameraScreen> {
       try {
         Uint8List? frameBytes;
 
-        if (Platform.isMacOS && _macOSController != null) {
+        if (_isMacOSPlatform && _macOSController != null) {
           final pic = await _macOSController!.takePicture();
           if (pic != null && pic.bytes != null) {
             frameBytes = await compute(_processImageInIsolate, {
@@ -344,12 +354,12 @@ class _CameraScreenState extends State<CameraScreen> {
   }
 
   Future<void> _initializeCameraList() async {
-    if (!Platform.isMacOS) {
+    if (!_isMacOSPlatform) {
       var status = await Permission.camera.request();
       if (!status.isGranted) return;
     }
 
-    if (Platform.isMacOS) {
+    if (_isMacOSPlatform) {
       try {
         final videoDevices = await CameraMacOS.instance
             .listDevices(deviceType: CameraMacOSDeviceType.video);
@@ -404,7 +414,7 @@ class _CameraScreenState extends State<CameraScreen> {
       _selectedDevice = device;
       _isCameraInitialized = false;
     });
-    if (Platform.isMacOS) {
+    if (_isMacOSPlatform) {
       _initializeMacOSCamera(device as CameraMacOSDevice);
     } else {
       _initializeMobileCamera(device as CameraDescription);
@@ -427,7 +437,7 @@ class _CameraScreenState extends State<CameraScreen> {
   Future<void> _startRecording() async {
     if (!_isCameraInitialized) return;
     try {
-      if (Platform.isMacOS && _macOSController != null) {
+      if (_isMacOSPlatform && _macOSController != null) {
         final dir = await getApplicationDocumentsDirectory();
         final ts = DateTime.now().millisecondsSinceEpoch;
         final path = '${dir.path}/AFS_REC_$ts.mov';
@@ -464,7 +474,7 @@ class _CameraScreenState extends State<CameraScreen> {
     _recordingTimer = null;
     String? savedPath;
     try {
-      if (Platform.isMacOS && _macOSController != null) {
+      if (_isMacOSPlatform && _macOSController != null) {
         final file = await _macOSController!.stopRecording();
         if (file != null) {
           final dir = await getApplicationDocumentsDirectory();
@@ -540,10 +550,10 @@ class _CameraScreenState extends State<CameraScreen> {
 
   // ── Camera Widget ──────────────────────────────────────────────────────────
   Widget _buildCameraWidget() {
-    if (!_isCameraInitialized && !Platform.isMacOS) {
+    if (!_isCameraInitialized && !_isMacOSPlatform) {
       return const Center(child: CircularProgressIndicator());
     }
-    if (Platform.isMacOS) {
+    if (_isMacOSPlatform) {
       return _selectedDevice != null
           ? CameraMacOSView(
               // Rebuild when video OR audio device changes
@@ -648,9 +658,13 @@ class _CameraScreenState extends State<CameraScreen> {
                     ),
                   ),
                 ),
-                onLogout: () => Navigator.of(context).pushReplacement(
-                  MaterialPageRoute(builder: (_) => const LoginScreen()),
-                ),
+                onLogout: () async {
+                  await AuthService.instance.logout();
+                  if (!context.mounted) return;
+                  Navigator.of(context).pushReplacement(
+                    MaterialPageRoute(builder: (_) => const LoginScreen()),
+                  );
+                },
               ),
               Expanded(
                 child: Row(
@@ -1240,12 +1254,12 @@ class BoundingBoxPainter extends CustomPainter {
 
     final targetPaint = Paint()
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 2.5
+      ..strokeWidth = 3.5
       ..color = AfsTheme.neonGreen;
 
     final otherPaint = Paint()
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.5
+      ..strokeWidth = 2.5
       ..color = AfsTheme.mintGreen.withValues(alpha: 0.7);
 
     // Corner-bracket drawing helper
