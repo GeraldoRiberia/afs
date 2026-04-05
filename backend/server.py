@@ -1,4 +1,4 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, status, Depends, UploadFile, File, Form
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, status, Depends, UploadFile, File, Form, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -14,6 +14,7 @@ import threading
 import os
 import base64
 import hashlib
+import math
 from pydantic import BaseModel, Field
 from pymongo import AsyncMongoClient
 from passlib.context import CryptContext
@@ -50,6 +51,10 @@ recording_filename = ""
 current_cx = 0.5
 current_cy = 0.5
 current_scale = 1.0
+
+# --- Real-time Target Tracking State ---
+current_target_angle = None
+current_target_distance = None
 
 # Configurable parameters for smooth panning
 SMOOTHING_FACTOR = 0.1  # Lower is smoother but slower (similar to Dart's TweenAnimation)
@@ -204,7 +209,7 @@ def apply_center_stage_crop(frame, tracking_data):
     the frame based on the tracking target bounding box.
     Returns the cropped frame.
     """
-    global current_cx, current_cy, current_scale
+    global current_cx, current_cy, current_scale, current_target_angle, current_target_distance
     
     h, w = frame.shape[:2]
     
@@ -212,6 +217,8 @@ def apply_center_stage_crop(frame, tracking_data):
     target_cx = 0.5
     target_cy = 0.5
     target_scale = 1.0
+    
+    target_found = False
     
     # Calculate target state based on tracking data
     boxes = tracking_data.get("boxes", [])
@@ -225,6 +232,7 @@ def apply_center_stage_crop(frame, tracking_data):
             
             target_cx = box_cx / w
             target_cy = box_cy / h
+            target_found = True
             
             # Target scale logic (from Dart): max dimension proportion * 1.5 margin
             max_dim = max(box_w / w, box_h / h)
@@ -246,10 +254,26 @@ def apply_center_stage_crop(frame, tracking_data):
             
             target_cx = box_cx / w
             target_cy = box_cy / h
+            target_found = True
             
             max_dim = max(box_w / w, box_h / h)
             target_scale = 1.0 / (max_dim * 2.0) # slightly tighter for single person
             target_scale = max(1.0, min(target_scale, 3.0))
+
+    if target_found:
+        # Calculate distance and angle from the frame center (w/2, h/2) to the target bounding box center (box_cx, box_cy)
+        center_x, center_y = w / 2.0, h / 2.0
+        
+        dx = box_cx - center_x
+        dy = box_cy - center_y
+        
+        current_target_distance = math.hypot(dx, dy)
+        # Convert atan2 result to 0-360 degrees
+        angle = math.degrees(math.atan2(dy, dx))
+        current_target_angle = angle % 360.0
+    else:
+        current_target_angle = None
+        current_target_distance = None
 
     # Apply EMA smoothing
     current_cx += (target_cx - current_cx) * SMOOTHING_FACTOR
@@ -895,6 +919,45 @@ async def set_desired_angle(
         raise
     except Exception as e:
         logger.error(f"Error setting angle in DB: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/audio/get-angle")
+async def get_current_angle():
+    """
+    Get the currently tracked angle of the target person.
+    If no person is tracked, fallback to the angle previously set via set-angle.
+    """
+    try:
+        global current_target_angle, current_target_distance
+        
+        # If a person is actively being tracked, return their real-time angle
+        if current_target_angle is not None:
+            return {
+                "ok": True,
+                "source": "tracking",
+                "angle": round(current_target_angle, 2),
+                "distance": round(current_target_distance, 2)
+            }
+            
+        # Fallback to the saved angle if no target is actively tracked
+        if audio_angles_collection is not None:
+            saved_angle_doc = await audio_angles_collection.find_one({"key": "latest_angle"})
+            if saved_angle_doc and "value" in saved_angle_doc:
+                return {
+                    "ok": True,
+                    "source": "database",
+                    "angle": float(saved_angle_doc["value"]),
+                    "distance": None
+                }
+                
+        return {
+            "ok": False,
+            "message": "No active tracking and no saved angle found",
+            "angle": None,
+            "distance": None
+        }
+    except Exception as e:
+        logger.error(f"Error retrieving angle: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/audio/settings")
