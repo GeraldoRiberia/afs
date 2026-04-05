@@ -66,7 +66,7 @@ app.add_middleware(
 )
 
 # Initialize trackers and services
-MODEL_DIR = Path(__file__).parent.parent / "Model"
+MODEL_DIR = Path(__file__).parent / "Model"
 single_tracker = SingleTracker()
 multi_tracker = MultiTracker()
 face_service = FaceRecognitionService(str(MODEL_DIR))
