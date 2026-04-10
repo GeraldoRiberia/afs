@@ -4,6 +4,7 @@ import 'package:camera_macos/camera_macos.dart';
 import 'package:camera/camera.dart';
 import '../theme.dart';
 import 'login_screen.dart';
+import '../services/config.dart';
 
 class SettingsScreen extends StatefulWidget {
   final List<dynamic> availableDevices;
@@ -30,7 +31,7 @@ class SettingsScreen extends StatefulWidget {
 
 class _SettingsScreenState extends State<SettingsScreen> {
   final _backendCtrl =
-      TextEditingController(text: 'ws://127.0.0.1:8000/ws');
+      TextEditingController(text: BackendConfig.wsUrl);
 
   late dynamic _localSelectedDevice;
   late dynamic _localSelectedAudio;

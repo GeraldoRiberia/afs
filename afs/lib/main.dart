@@ -20,6 +20,7 @@ import 'widgets/afs_controls_bar.dart';
 import 'screens/onboarding_screen.dart';
 import 'screens/login_screen.dart';
 import 'services/auth_service.dart';
+import 'services/config.dart';
 
 // Top level function for Isolate
 Future<Uint8List?> _processImageInIsolate(Map<String, dynamic> params) async {
@@ -52,6 +53,7 @@ bool get _isAndroidPlatform =>
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await BackendConfig.init();
   if (!_isMacOSPlatform) {
     try {
       _mobileCameras = await availableCameras();
@@ -129,8 +131,7 @@ class _CameraScreenState extends State<CameraScreen> {
   dynamic _selectedAudioDevice;
 
   // Backend address
-  final String _backendUrl =
-      _isAndroidPlatform ? 'ws://10.0.2.2:8000/ws' : 'ws://127.0.0.1:8000/ws';
+  final String _backendUrl = BackendConfig.wsUrl;
 
   // ── Recording state ───────────────────────────────────────────────────────
   bool _isRecording = false;

@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'config.dart';
 
 class AuthException implements Exception {
   final String message;
@@ -20,11 +21,7 @@ class AuthService {
   final _storage = const FlutterSecureStorage();
   final String _tokenKey = 'jwt_token';
 
-    bool get _isAndroidPlatform =>
-      !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
-
-  String get _baseUrl =>
-      _isAndroidPlatform ? 'http://10.0.2.2:8000' : 'http://127.0.0.1:8000';
+  String get _baseUrl => BackendConfig.baseUrl;
 
   Future<void> register({
     required String fullName,
