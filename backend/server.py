@@ -57,8 +57,9 @@ current_target_angle = None
 current_target_distance = None
 
 # Configurable parameters for smooth panning
-SMOOTHING_FACTOR = 0.1  # Lower is smoother but slower (similar to Dart's TweenAnimation)
-TARGET_ASPECT_RATIO = 16.0 / 9.0  # Assuming output is meant to be 16:9 
+# Lower is smoother but slower (similar to Dart's TweenAnimation)
+SMOOTHING_FACTOR = 0.1
+TARGET_ASPECT_RATIO = 16.0 / 9.0  # Assuming output is meant to be 16:9
 
 app = FastAPI(title="AFS Tracking Backend")
 
@@ -87,7 +88,8 @@ audio_angles_collection = None
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 # JWT Configuration
-SECRET_KEY = os.getenv("JWT_SECRET_KEY", "your-secret-key-change-in-production")
+SECRET_KEY = os.getenv(
+    "JWT_SECRET_KEY", "your-secret-key-change-in-production")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7  # 7 days
 
@@ -157,7 +159,7 @@ def create_access_token(data: dict, expires_delta: timedelta | None = None):
 async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
     collection = require_users_collection()
     token = credentials.credentials
-    
+
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         user_id: str = payload.get("sub")
@@ -171,7 +173,7 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired token",
         )
-    
+
     from bson import ObjectId
     try:
         user_doc = await collection.find_one({"_id": ObjectId(user_id)})
@@ -180,18 +182,19 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="User not found",
         )
-    
+
     if user_doc is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="User not found",
         )
-    
+
     return UserPublic(
         id=str(user_doc["_id"]),
         full_name=user_doc["full_name"],
         email=user_doc["email"],
     )
+
 
 def decode_binary_image(img_data: bytes):
     """Decodes raw JPEG bytes into an OpenCV numpy array."""
@@ -203,6 +206,7 @@ def decode_binary_image(img_data: bytes):
         logger.error(f"Failed to decode image: {e}")
         return None
 
+
 def apply_center_stage_crop(frame, tracking_data):
     """
     Applies an exponential moving average (EMA) to smoothly pan and zoom
@@ -210,16 +214,16 @@ def apply_center_stage_crop(frame, tracking_data):
     Returns the cropped frame.
     """
     global current_cx, current_cy, current_scale, current_target_angle, current_target_distance
-    
+
     h, w = frame.shape[:2]
-    
+
     # Defaults
     target_cx = 0.5
     target_cy = 0.5
     target_scale = 1.0
-    
+
     target_found = False
-    
+
     # Calculate target state based on tracking data
     boxes = tracking_data.get("boxes", [])
     if tracking_data.get("mode") == "multi":
@@ -229,44 +233,45 @@ def apply_center_stage_crop(frame, tracking_data):
             box_cy = (ab["y1"] + ab["y2"]) / 2.0
             box_w = ab["x2"] - ab["x1"]
             box_h = ab["y2"] - ab["y1"]
-            
+
             target_cx = box_cx / w
             target_cy = box_cy / h
             target_found = True
-            
+
             # Target scale logic (from Dart): max dimension proportion * 1.5 margin
             max_dim = max(box_w / w, box_h / h)
             target_scale = 1.0 / (max_dim * 1.5)
             # Clamp scale
             target_scale = max(1.0, min(target_scale, 3.0))
-    else: # single
+    else:  # single
         target_box = None
         for b in boxes:
             if b.get("is_target"):
                 target_box = b
                 break
-        
+
         if target_box:
             box_cx = (target_box["x1"] + target_box["x2"]) / 2.0
             box_cy = (target_box["y1"] + target_box["y2"]) / 2.0
             box_w = target_box["x2"] - target_box["x1"]
             box_h = target_box["y2"] - target_box["y1"]
-            
+
             target_cx = box_cx / w
             target_cy = box_cy / h
             target_found = True
-            
+
             max_dim = max(box_w / w, box_h / h)
-            target_scale = 1.0 / (max_dim * 2.0) # slightly tighter for single person
+            # slightly tighter for single person
+            target_scale = 1.0 / (max_dim * 2.0)
             target_scale = max(1.0, min(target_scale, 3.0))
 
     if target_found:
         # Calculate distance and angle from the frame center (w/2, h/2) to the target bounding box center (box_cx, box_cy)
         center_x, center_y = w / 2.0, h / 2.0
-        
+
         dx = box_cx - center_x
         dy = box_cy - center_y
-        
+
         current_target_distance = math.hypot(dx, dy)
         # Convert atan2 result to 0-360 degrees
         angle = math.degrees(math.atan2(dy, dx))
@@ -284,7 +289,7 @@ def apply_center_stage_crop(frame, tracking_data):
     # When scale is S, the crop width is w / S
     crop_w = int(w / current_scale)
     crop_h = int(h / current_scale)
-    
+
     # Enforce aspect ratio
     # If crop_w / crop_h is not 16:9, adjust one to match
     current_ar = crop_w / max(1, crop_h)
@@ -298,10 +303,10 @@ def apply_center_stage_crop(frame, tracking_data):
     # Calculate top-left point of crop, clamping to frame boundaries
     center_px_x = int(current_cx * w)
     center_px_y = int(current_cy * h)
-    
+
     start_x = max(0, center_px_x - crop_w // 2)
     start_y = max(0, center_px_y - crop_h // 2)
-    
+
     # Adjust if crop box goes out of bounds
     if start_x + crop_w > w:
         start_x = w - crop_w
@@ -311,6 +316,7 @@ def apply_center_stage_crop(frame, tracking_data):
     # Crop
     cropped = frame[start_y:start_y+crop_h, start_x:start_x+crop_w]
     return cropped
+
 
 async def generate_obs_stream():
     """Generator for the MJPEG stream used by OBS."""
@@ -325,12 +331,14 @@ async def generate_obs_stream():
                 await asyncio.sleep(0.1)
                 continue
         # Use asyncio sleep to prevent blocking the event loop
-        await asyncio.sleep(0.033) # roughly 30 fps
+        await asyncio.sleep(0.033)  # roughly 30 fps
+
 
 @app.get("/obs_feed")
 async def obs_feed():
     """Endpoint for OBS Media Source to connect to."""
     return StreamingResponse(generate_obs_stream(), media_type="multipart/x-mixed-replace; boundary=frame")
+
 
 async def vcam_generator_loop():
     """Background task to push frames to the virtual camera at 30fps."""
@@ -343,6 +351,7 @@ async def vcam_generator_loop():
             logger.error(f"vcam loop error: {e}")
         await asyncio.sleep(1/30)
 
+
 @app.get("/")
 async def health_check():
     """Health check endpoint."""
@@ -353,6 +362,7 @@ async def health_check():
         "mongodb": status_db
     }
 
+
 async def mongodb_reconnect_loop():
     """Background task to attempt MongoDB reconnection if disconnected."""
     global mongo_client, users_collection, audio_recordings_collection, audio_settings_collection
@@ -362,10 +372,11 @@ async def mongodb_reconnect_loop():
             mongo_db_name = os.getenv("MONGODB_DB", "afs")
             try:
                 logger.info("Attempting to reconnect to MongoDB...")
-                client = AsyncMongoClient(mongo_uri, serverSelectionTimeoutMS=5000)
+                client = AsyncMongoClient(
+                    mongo_uri, serverSelectionTimeoutMS=5000)
                 # Ping to force connection verification
                 await client.admin.command('ping')
-                
+
                 # Re-initialize
                 mongo_client = client
                 db = mongo_client[mongo_db_name]
@@ -373,7 +384,7 @@ async def mongodb_reconnect_loop():
                 audio_recordings_collection = db["audio_recordings"]
                 audio_settings_collection = db["audio_settings"]
                 audio_angles_collection = db["audio_angles"]
-                
+
                 await users_collection.create_index("email", unique=True)
                 logger.info("Successfully reconnected to MongoDB.")
             except Exception as e:
@@ -383,9 +394,10 @@ async def mongodb_reconnect_loop():
                 audio_recordings_collection = None
                 audio_settings_collection = None
                 audio_angles_collection = None
-        
+
         # Wait before next check (e.g., 10 seconds)
         await asyncio.sleep(10)
+
 
 @app.on_event("startup")
 async def startup_event():
@@ -394,20 +406,22 @@ async def startup_event():
     mongo_db_name = os.getenv("MONGODB_DB", "afs")
 
     try:
-        mongo_client = AsyncMongoClient(mongo_uri, serverSelectionTimeoutMS=5000)
+        mongo_client = AsyncMongoClient(
+            mongo_uri, serverSelectionTimeoutMS=5000)
         # Ping to force connection verification
         await mongo_client.admin.command('ping')
-        
+
         db = mongo_client[mongo_db_name]
         users_collection = db["users"]
         audio_recordings_collection = db["audio_recordings"]
         audio_settings_collection = db["audio_settings"]
         audio_angles_collection = db["audio_angles"]
-        
+
         await users_collection.create_index("email", unique=True)
         logger.info("Connected to MongoDB and initialized collections.")
     except Exception as e:
-        logger.warning(f"MongoDB connection failed on startup: {e}. Starting reconnection loop.")
+        logger.warning(f"MongoDB connection failed on startup: {
+                       e}. Starting reconnection loop.")
         mongo_client = None
         users_collection = None
         audio_recordings_collection = None
@@ -447,7 +461,7 @@ async def register(payload: RegisterRequest):
         "updated_at": now,
     }
     insert_result = await collection.insert_one(user_doc)
-    
+
     user_id = str(insert_result.inserted_id)
     access_token = create_access_token(data={"sub": user_id})
 
@@ -474,7 +488,7 @@ async def login(payload: LoginRequest):
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email or password.",
         )
-    
+
     user_id = str(user_doc["_id"])
     access_token = create_access_token(data={"sub": user_id})
 
@@ -495,14 +509,15 @@ async def verify_token(current_user: UserPublic = Depends(get_current_user)):
     """Verify JWT token and return user info"""
     return current_user
 
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     global is_recording, video_writer, recording_filename, latest_obs_frame, is_obs_active
-    
+
     await websocket.accept()
     logger.info("New WebSocket connection established.")
-    
-    current_mode = "single" # Default mode
+
+    current_mode = "single"  # Default mode
 
     try:
         while True:
@@ -513,7 +528,8 @@ async def websocket_endpoint(websocket: WebSocket):
                 try:
                     payload = json.loads(message["text"])
                     if "mode" in payload and payload["mode"] != current_mode:
-                        logger.info(f"Switching mode from {current_mode} to {payload['mode']}")
+                        logger.info(f"Switching mode from {
+                                    current_mode} to {payload['mode']}")
                         current_mode = payload["mode"]
                         await websocket.send_json({"type": "mode_ack", "mode": current_mode})
                     elif "command" in payload:
@@ -522,8 +538,10 @@ async def websocket_endpoint(websocket: WebSocket):
                         if command == "start_recording":
                             if not is_recording:
                                 is_recording = True
-                                recording_filename = f"capture_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4"
-                                logger.info(f"Started recording to {recording_filename}")
+                                recording_filename = f"capture_{
+                                    datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4"
+                                logger.info(f"Started recording to {
+                                            recording_filename}")
                                 await websocket.send_json({"type": "recording_ack", "status": "started"})
                         elif command == "stop_recording":
                             if is_recording:
@@ -531,7 +549,8 @@ async def websocket_endpoint(websocket: WebSocket):
                                 if video_writer is not None:
                                     video_writer.release()
                                     video_writer = None
-                                logger.info(f"Stopped recording. File saved as {recording_filename}")
+                                logger.info(f'''Stopped recording. File saved as {
+                                            recording_filename}''')
                         elif command == "start_obs":
                             if not is_obs_active:
                                 is_obs_active = True
@@ -549,7 +568,7 @@ async def websocket_endpoint(websocket: WebSocket):
             elif "bytes" in message:
                 frame_data = message["bytes"]
                 frame = decode_binary_image(frame_data)
-                
+
                 if frame is None:
                     await websocket.send_json({"error": "Failed to decode binary frame"})
                     continue
@@ -570,38 +589,44 @@ async def websocket_endpoint(websocket: WebSocket):
                         executor, run_inference, frame, current_mode
                     )
                 except Exception as e:
-                    logger.error(f"Error processing frame in {current_mode} mode: {e}")
+                    logger.error(f"Error processing frame in {
+                                 current_mode} mode: {e}")
                     response_data = {"error": str(e)}
 
                 # Send results back to client
                 response_data["mode"] = current_mode
                 await websocket.send_json(response_data)
-                
+
                 # Apply Crop and Handle OBS / Recording
                 try:
-                    cropped_frame = apply_center_stage_crop(frame, response_data)
-                    
+                    cropped_frame = apply_center_stage_crop(
+                        frame, response_data)
+
                     # 1. Update OBS Feed
                     if is_obs_active:
                         ret, buffer = cv2.imencode('.jpg', cropped_frame)
                         if ret:
                             with obs_frame_lock:
                                 latest_obs_frame = buffer.tobytes()
-                    
+
                     # 2. Update Recording Output
                     if is_recording:
                         h, w = cropped_frame.shape[:2]
                         if video_writer is None:
                             # Initialize writer with the exact dimensions of the FIRST cropped frame
                             fourcc = cv2.VideoWriter_fourcc(*'avc1')
-                            video_writer = cv2.VideoWriter(recording_filename, fourcc, 5.0, (w, h))
-                        
+                            video_writer = cv2.VideoWriter(
+                                recording_filename, fourcc, 5.0, (w, h))
+
                         # Ensure we try to resize cleanly if aspect ratio forces slight off-by-one errors over time
                         if video_writer is not None:
-                            target_w = int(video_writer.get(cv2.CAP_PROP_FRAME_WIDTH))
-                            target_h = int(video_writer.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                            target_w = int(video_writer.get(
+                                cv2.CAP_PROP_FRAME_WIDTH))
+                            target_h = int(video_writer.get(
+                                cv2.CAP_PROP_FRAME_HEIGHT))
                             if (w, h) != (target_w, target_h):
-                                cropped_frame = cv2.resize(cropped_frame, (target_w, target_h))
+                                cropped_frame = cv2.resize(
+                                    cropped_frame, (target_w, target_h))
                             video_writer.write(cropped_frame)
                 except Exception as e:
                     logger.error(f"Error handling post-process crops: {e}")
@@ -621,6 +646,7 @@ async def websocket_endpoint(websocket: WebSocket):
 
 # === FACE RECOGNITION ENDPOINTS ===
 
+
 @app.post("/api/face/upload-video")
 async def upload_reference_video(
     file: UploadFile = File(...),
@@ -628,20 +654,23 @@ async def upload_reference_video(
 ):
     """Upload a 360-degree reference video for face recognition training."""
     if not file.filename.endswith(('.mp4', '.avi', '.mov', '.mkv')):
-        raise HTTPException(status_code=400, detail="Invalid video format. Use mp4, avi, mov, or mkv")
-    
+        raise HTTPException(
+            status_code=400, detail="Invalid video format. Use mp4, avi, mov, or mkv")
+
     video_path = MODEL_DIR / "my_scan.mp4"
-    
+
     try:
         with open(video_path, 'wb') as f:
             shutil.copyfileobj(file.file, f)
-        
+
         embeddings, num_frames = await asyncio.get_event_loop().run_in_executor(
-            executor, face_service.extract_embeddings_from_video, str(video_path)
+            executor, face_service.extract_embeddings_from_video, str(
+                video_path)
         )
-        
-        face_service.save_embeddings_cache(embeddings, str(video_path), num_frames)
-        
+
+        face_service.save_embeddings_cache(
+            embeddings, str(video_path), num_frames)
+
         return {
             "ok": True,
             "message": "Video processed successfully",
@@ -652,6 +681,7 @@ async def upload_reference_video(
         logger.error(f"Error processing video: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @app.post("/api/face/upload-image")
 async def upload_reference_image(
     file: UploadFile = File(...),
@@ -659,18 +689,20 @@ async def upload_reference_image(
 ):
     """Upload a reference image for face recognition."""
     if not file.filename.endswith(('.jpg', '.jpeg', '.png')):
-        raise HTTPException(status_code=400, detail="Invalid image format. Use jpg, jpeg, or png")
-    
+        raise HTTPException(
+            status_code=400, detail="Invalid image format. Use jpg, jpeg, or png")
+
     image_path = MODEL_DIR / f"ref_{file.filename}"
-    
+
     try:
         with open(image_path, 'wb') as f:
             shutil.copyfileobj(file.file, f)
-        
+
         embeddings = await asyncio.get_event_loop().run_in_executor(
-            executor, face_service.extract_embeddings_from_image, str(image_path)
+            executor, face_service.extract_embeddings_from_image, str(
+                image_path)
         )
-        
+
         return {
             "ok": True,
             "message": "Image processed successfully",
@@ -681,11 +713,12 @@ async def upload_reference_image(
         logger.error(f"Error processing image: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @app.get("/api/face/cache-status")
 async def get_cache_status(current_user: UserPublic = Depends(get_current_user)):
     """Get the current face recognition cache status."""
     cache_data = face_service.load_embeddings_cache()
-    
+
     if cache_data:
         return {
             "ok": True,
@@ -704,6 +737,7 @@ async def get_cache_status(current_user: UserPublic = Depends(get_current_user))
 
 # === AUDIO STREAMING ENDPOINTS ===
 
+
 @app.post("/api/audio/start-stream")
 async def start_audio_stream(
     sample_rate: int = Form(16000),
@@ -712,9 +746,10 @@ async def start_audio_stream(
 ):
     """Start a new audio recording stream."""
     session_id = str(uuid.uuid4())
-    
+
     try:
-        filename = audio_processor.create_audio_stream(session_id, sample_rate, channels)
+        filename = audio_processor.create_audio_stream(
+            session_id, sample_rate, channels)
         return {
             "ok": True,
             "session_id": session_id,
@@ -726,52 +761,57 @@ async def start_audio_stream(
         logger.error(f"Error starting audio stream: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @app.websocket("/ws/audio/{session_id}")
 async def websocket_audio_stream(websocket: WebSocket, session_id: str):
     """WebSocket endpoint for streaming audio with angle data."""
     await websocket.accept()
-    logger.info(f"Audio WebSocket connection established for session {session_id}")
-    
+    logger.info(
+        f"Audio WebSocket connection established for session {session_id}")
+
     # Auto-create stream if not exists
     if session_id not in audio_processor.active_streams:
         audio_processor.create_audio_stream(session_id)
         logger.info(f"Auto-created audio stream for session {session_id}")
-    
+
     try:
         while True:
             message = await websocket.receive()
-            
+
             if "bytes" in message:
                 audio_data = message["bytes"]
                 audio_processor.write_audio_chunk(session_id, audio_data)
                 await websocket.send_json({"status": "received", "bytes": len(audio_data)})
-            
+
             elif "text" in message:
                 try:
                     payload = json.loads(message["text"])
-                    
+
                     if "audio_data" in payload and "angle" in payload:
                         audio_bytes = base64.b64decode(payload["audio_data"])
                         angle = float(payload["angle"])
-                        audio_processor.write_audio_chunk(session_id, audio_bytes, angle)
+                        audio_processor.write_audio_chunk(
+                            session_id, audio_bytes, angle)
                         await websocket.send_json({"status": "received", "angle": angle})
-                    
+
                     elif payload.get("command") == "stop":
                         audio_processor.close_audio_stream(session_id)
                         await websocket.send_json({"status": "stopped", "message": "Stream closed"})
                         break
-                        
+
                 except json.JSONDecodeError:
                     logger.error("Invalid JSON in audio stream")
-                    
+
     except WebSocketDisconnect:
-        logger.info(f"Audio WebSocket client disconnected for session {session_id}")
+        logger.info(
+            f"Audio WebSocket client disconnected for session {session_id}")
         if session_id in audio_processor.active_streams:
             audio_processor.close_audio_stream(session_id)
     except Exception as e:
         logger.error(f"Audio WebSocket error: {e}")
         if session_id in audio_processor.active_streams:
             audio_processor.close_audio_stream(session_id)
+
 
 @app.post("/api/audio/stop-stream/{session_id}")
 async def stop_audio_stream(
@@ -789,6 +829,7 @@ async def stop_audio_stream(
         logger.error(f"Error stopping audio stream: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @app.get("/api/audio/recordings")
 async def list_audio_recordings(current_user: UserPublic = Depends(get_current_user)):
     """List all audio recordings."""
@@ -802,6 +843,7 @@ async def list_audio_recordings(current_user: UserPublic = Depends(get_current_u
     except Exception as e:
         logger.error(f"Error listing recordings: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.get("/api/audio/active-sessions")
 async def get_active_sessions():
@@ -817,23 +859,24 @@ async def get_active_sessions():
         logger.error(f"Error getting active sessions: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @app.get("/api/audio/angles")
 async def get_audio_angles():
     """Get angle metadata for the latest audio session."""
     try:
         audio_dir = MODEL_DIR / "audio_recordings"
         metadata_files = list(audio_dir.glob("*_metadata.txt"))
-        
+
         if not metadata_files:
             raise HTTPException(
                 status_code=404,
                 detail="No metadata found"
             )
-        
+
         # Get the most recently modified metadata file
         import os
         metadata_file = max(metadata_files, key=os.path.getmtime)
-        
+
         angles_data = []
         with open(metadata_file, 'r') as f:
             lines = f.readlines()
@@ -846,10 +889,11 @@ async def get_audio_angles():
                         try:
                             timestamp = float(parts[0])
                             angle = float(parts[1])
-                            angles_data.append({"timestamp": timestamp, "angle": angle})
+                            angles_data.append(
+                                {"timestamp": timestamp, "angle": angle})
                         except ValueError:
                             continue
-        
+
         return {
             "ok": True,
             "file": metadata_file.name,
@@ -862,6 +906,7 @@ async def get_audio_angles():
         logger.error(f"Error retrieving angles: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @app.post("/api/audio/upload")
 async def upload_audio_file(
     file: UploadFile = File(...)
@@ -870,15 +915,15 @@ async def upload_audio_file(
     try:
         # Read file content for DB persistence
         file_content = await file.read()
-        
+
         if audio_recordings_collection is not None:
             await audio_recordings_collection.insert_one({
                 "filename": file.filename,
-                "content": file_content, # Saved as binary in MongoDB
+                "content": file_content,  # Saved as binary in MongoDB
                 "content_type": file.content_type,
                 "timestamp": datetime.utcnow()
             })
-            
+
         return {
             "ok": True,
             "message": "Audio file saved to database successfully",
@@ -888,6 +933,7 @@ async def upload_audio_file(
     except Exception as e:
         logger.error(f"Error saving audio to DB: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.post("/api/audio/set-angle")
 async def set_desired_angle(
@@ -900,16 +946,16 @@ async def set_desired_angle(
                 status_code=400,
                 detail="Angle must be between 0 and 360 degrees"
             )
-        
+
         if audio_angles_collection is not None:
             await audio_angles_collection.update_one(
                 {"key": "latest_angle"},
                 {"$set": {"value": angle, "updated_at": datetime.utcnow()}},
                 upsert=True
             )
-        
+
         logger.info(f"Set and persisted desired angle {angle}° to DB")
-        
+
         return {
             "ok": True,
             "message": f"Desired angle set to {angle}° and saved to DB",
@@ -921,6 +967,7 @@ async def set_desired_angle(
         logger.error(f"Error setting angle in DB: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @app.get("/api/audio/get-angle")
 async def get_current_angle():
     """
@@ -929,7 +976,8 @@ async def get_current_angle():
     """
     try:
         global current_target_angle, current_target_distance
-        
+
+        logger.info(current_target_angle, current_target_distance)
         # If a person is actively being tracked, return their real-time angle
         if current_target_angle is not None:
             return {
@@ -938,7 +986,7 @@ async def get_current_angle():
                 "angle": round(current_target_angle, 2),
                 "distance": round(current_target_distance, 2)
             }
-            
+
         # Fallback to the saved angle if no target is actively tracked
         if audio_angles_collection is not None:
             saved_angle_doc = await audio_angles_collection.find_one({"key": "latest_angle"})
@@ -949,7 +997,7 @@ async def get_current_angle():
                     "angle": float(saved_angle_doc["value"]),
                     "distance": None
                 }
-                
+
         return {
             "ok": False,
             "message": "No active tracking and no saved angle found",
@@ -960,19 +1008,21 @@ async def get_current_angle():
         logger.error(f"Error retrieving angle: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @app.get("/api/audio/settings")
 async def get_audio_settings():
     """Retrieve all audio settings from MongoDB."""
     try:
         if audio_settings_collection is None:
             return {"ok": False, "message": "Database not connected"}
-        
+
         cursor = audio_settings_collection.find({}, {"_id": 0})
         settings_list = await cursor.to_list(length=100)
-        
+
         # Convert list to dictionary
-        settings_dict = {s["key"]: s["value"] for s in settings_list if "key" in s}
-        
+        settings_dict = {s["key"]: s["value"]
+                         for s in settings_list if "key" in s}
+
         return {
             "ok": True,
             "settings": settings_dict
@@ -981,6 +1031,7 @@ async def get_audio_settings():
         logger.error(f"Error retrieving audio settings: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @app.post("/api/audio/settings")
 async def update_audio_settings(
     settings: dict = Body(...)
@@ -988,15 +1039,16 @@ async def update_audio_settings(
     """Update general audio settings in MongoDB."""
     try:
         if audio_settings_collection is None:
-            raise HTTPException(status_code=503, detail="Database not connected")
-        
+            raise HTTPException(
+                status_code=503, detail="Database not connected")
+
         for key, value in settings.items():
             await audio_settings_collection.update_one(
                 {"key": key},
                 {"$set": {"value": value, "updated_at": datetime.utcnow()}},
                 upsert=True
             )
-        
+
         return {
             "ok": True,
             "message": "Audio settings updated successfully",

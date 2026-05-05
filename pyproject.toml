@@ -20,4 +20,11 @@ dependencies = [
     "bcrypt>=5.0.0",
     "python-dotenv>=1.2.2",
     "python-multipart>=0.0.22",
+    "torchaudio>=2.11.0",
+    "transformers>=5.7.0",
+]
+
+[dependency-groups]
+dev = [
+    "fastapi[standard]>=0.135.3",
 ]

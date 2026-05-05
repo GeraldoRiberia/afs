@@ -12,6 +12,7 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:image/image.dart' as img;
+import 'package:http/http.dart' as http;
 
 import 'theme.dart';
 import 'screens/settings_screen.dart';
@@ -112,6 +113,11 @@ class _CameraScreenState extends State<CameraScreen> {
   bool _isWaitingForServer = false;
   DateTime? _lastSentTime;
 
+  // Sound Direction state
+  double? _soundAngle;
+  String? _soundLabel;
+  Timer? _soundTimer;
+
   // FPS tracking
   int _framesSent = 0;
   DateTime? _fpsWindowStart;
@@ -151,6 +157,7 @@ class _CameraScreenState extends State<CameraScreen> {
     super.initState();
     _connectWebSocket();
     _initializeCameraList();
+    _startSoundPolling();
   }
 
   void _connectWebSocket() {
@@ -544,9 +551,44 @@ class _CameraScreenState extends State<CameraScreen> {
   void dispose() {
     _frameTimer?.cancel();
     _recordingTimer?.cancel();
+    _soundTimer?.cancel();
     _channel?.sink.close();
     _mobileController?.dispose();
     super.dispose();
+  }
+
+  // ── Sound Polling ──────────────────────────────────────────────────────────
+  void _startSoundPolling() {
+    _soundTimer?.cancel();
+    _soundTimer = Timer.periodic(const Duration(milliseconds: 500), (timer) async {
+      if (!mounted) return;
+      try {
+        final response = await http
+            .get(Uri.parse('${BackendConfig.soundBaseUrl}/latest'))
+            .timeout(const Duration(milliseconds: 400));
+        if (response.statusCode == 200) {
+          final data = jsonDecode(response.body);
+          if (mounted) {
+            setState(() {
+              _soundAngle = data['angle_deg'];
+              _soundLabel = data['label'];
+            });
+          }
+        }
+      } catch (_) {
+        // Silent fail for polling
+      }
+    });
+  }
+
+  String get _soundDirectionIndicator {
+    if (_soundAngle == null || _soundLabel == null) return '—';
+    if (_soundLabel != 'Speech') return '—'; // Only show for speech
+    
+    // Threshold to avoid jitter
+    if (_soundAngle! < -10) return '←';
+    if (_soundAngle! > 10) return '→';
+    return '↑'; // Centered
   }
 
   // ── Camera Widget ──────────────────────────────────────────────────────────
@@ -752,6 +794,8 @@ class _CameraScreenState extends State<CameraScreen> {
                         fps: _currentFps,
                         mode: _currentMode,
                         hasTarget: _targetScale > 1.05,
+                        soundDirection: _soundDirectionIndicator,
+                        soundLabel: _soundLabel,
                         onConnectionToggle: _toggleConnection,
                         onZoomReset: _resetZoom,
                       ),
@@ -1063,6 +1107,8 @@ class _HudSidebar extends StatelessWidget {
   final double fps;
   final TrackingMode mode;
   final bool hasTarget;
+  final String soundDirection;
+  final String? soundLabel;
   final VoidCallback onConnectionToggle;
   final VoidCallback onZoomReset;
 
@@ -1073,6 +1119,8 @@ class _HudSidebar extends StatelessWidget {
     required this.fps,
     required this.mode,
     required this.hasTarget,
+    required this.soundDirection,
+    this.soundLabel,
     required this.onConnectionToggle,
     required this.onZoomReset,
   });
@@ -1132,6 +1180,14 @@ class _HudSidebar extends StatelessWidget {
                 label: 'SEND RATE',
                 value: fps > 0 ? '${fps.toStringAsFixed(1)} fps' : '—',
                 icon: Icons.speed_rounded,
+              ),
+              const SizedBox(height: 10),
+
+              HudStatTile(
+                label: 'SOUND DIR',
+                value: soundDirection,
+                icon: Icons.mic_rounded,
+                valueColor: soundDirection != '—' ? AfsTheme.neonGreen : AfsTheme.ashGray.withValues(alpha: 0.4),
               ),
 
               const Spacer(),
