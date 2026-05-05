@@ -17,17 +17,22 @@ class BackendConfig {
       // If reachable, use localhost
       baseUrl = localBaseUrl;
       wsUrl = isAndroid ? 'ws://10.0.2.2:8000/ws' : 'ws://127.0.0.1:8000/ws';
-      soundBaseUrl = localSoundUrl;
       print("✅ Using LOCAL backend: $baseUrl");
-      print("🔊 Using LOCAL sound API: $soundBaseUrl");
     } catch (_) {
       // Fallback to production URL
       baseUrl = 'https://arnavam-afs-backend.hf.space';
       wsUrl = 'wss://arnavam-afs-backend.hf.space/ws';
-      // In production, sound API might be on a different path or subdomain
-      // For now, we'll just keep it as is or point to a default
-      soundBaseUrl = 'https://arnavam-afs-sound.hf.space'; 
       print("🌍 Using PRODUCTION backend: $baseUrl");
+    }
+
+    try {
+      // Try to connect to localhost:8001
+      final response = await http.get(Uri.parse('$localSoundUrl/latest')).timeout(const Duration(milliseconds: 1500));
+      soundBaseUrl = localSoundUrl;
+      print("🔊 Using LOCAL sound API: $soundBaseUrl");
+    } catch (_) {
+      soundBaseUrl = 'https://arnavam-afs-sound.hf.space'; 
+      print("🌍 Using PRODUCTION sound API: $soundBaseUrl");
     }
   }
 }

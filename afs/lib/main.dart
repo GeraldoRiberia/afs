@@ -585,10 +585,11 @@ class _CameraScreenState extends State<CameraScreen> {
     if (_soundAngle == null || _soundLabel == null) return '—';
     if (_soundLabel != 'Speech') return '—'; // Only show for speech
     
+    final angleStr = '${_soundAngle!.toStringAsFixed(1)}°';
     // Threshold to avoid jitter
-    if (_soundAngle! < -10) return '←';
-    if (_soundAngle! > 10) return '→';
-    return '↑'; // Centered
+    if (_soundAngle! < -10) return '← $angleStr';
+    if (_soundAngle! > 10) return '→ $angleStr';
+    return '↑ $angleStr'; // Centered
   }
 
   // ── Camera Widget ──────────────────────────────────────────────────────────

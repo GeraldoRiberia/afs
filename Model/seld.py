@@ -4,13 +4,8 @@ import torch
 import torchaudio.functional as F
 from transformers import ASTForAudioClassification, ASTFeatureExtractor
 
-latest_result = {
-    "label": None,
-    "angle": None,
-}
-
 # -------------------------------
-# 🔥 MODEL SETUP
+# 🔥 MODEL SETUP (load once)
 # -------------------------------
 feature_extractor = ASTFeatureExtractor.from_pretrained(
     "MIT/ast-finetuned-audioset-10-10-0.4593"
@@ -20,152 +15,152 @@ model = ASTForAudioClassification.from_pretrained(
 )
 
 # -------------------------------
-# 📡 UDP SETUP (ESP32 STREAM)
+# 🧠 GCC-PHAT (time delay estimation)
 # -------------------------------
-UDP_IP = "0.0.0.0"
-UDP_PORT = 12345
-
-
-# -------------------------------
-# 🧠 GCC-PHAT
-# -------------------------------
-
-
 def gcc_phat(sig, refsig, fs=16000):
     n = sig.shape[0] + refsig.shape[0]
-
     SIG = np.fft.rfft(sig, n=n)
     REFSIG = np.fft.rfft(refsig, n=n)
-
     R = SIG * np.conj(REFSIG)
     R /= (np.abs(R) + 1e-8)
-
     cc = np.fft.irfft(R, n=n)
-
     max_shift = int(n / 2)
     cc = np.concatenate((cc[-max_shift:], cc[:max_shift]))
-
     shift = np.argmax(np.abs(cc)) - max_shift
     return shift
 
 # -------------------------------
-# 🎯 PROCESS AUDIO
+# 🎯 PROCESS AUDIO (angle + classification)
 # -------------------------------
-
-
 def process_audio(stereo_audio, sample_rate=16000, mic_dist_meters=0.2):
-
     # 1. LOCALIZATION
     delay_samples = gcc_phat(stereo_audio[0], stereo_audio[1], fs=sample_rate)
-
     speed_of_sound = 343.0
     max_possible_delay = (mic_dist_meters / speed_of_sound) * sample_rate
-
-    delay_ratio = delay_samples / max_possible_delay
-    delay_ratio = np.clip(delay_ratio, -1.0, 1.0)
-
-    CALIBRATION_MAX_ANGLE = 74.7  # measured once
-
+    delay_ratio = np.clip(delay_samples / max_possible_delay, -1.0, 1.0)
+    CALIBRATION_MAX_ANGLE = 74.7  # your pre‑measured value
     angle = np.arcsin(delay_ratio) * (180 / np.pi)
     angle = angle * (90.0 / CALIBRATION_MAX_ANGLE)
 
-    # 2. CLASSIFICATION
+    # 2. CLASSIFICATION (mono mix)
     mono_audio = torch.mean(torch.tensor(stereo_audio), dim=0)
-
     inputs = feature_extractor(
         mono_audio,
         sampling_rate=sample_rate,
         return_tensors="pt"
     )
-
     with torch.no_grad():
         logits = model(**inputs).logits
-
     predicted_class_id = logits.argmax(-1).item()
     predicted_label = model.config.id2label[predicted_class_id]
 
     return predicted_label, angle
 
+# -------------------------------
+# 🌍 GLOBALS for send_to_edge_device (set by FastAPI startup)
+# -------------------------------
+_result_dict_global = None
+_result_lock_global = None
+
+def set_global_result_dict(result_dict, lock):
+    """Call this once from the FastAPI startup event to provide the shared state."""
+    global _result_dict_global, _result_lock_global
+    _result_dict_global = result_dict
+    _result_lock_global = lock
 
 # -------------------------------
-# 🎧 STREAMING + BUFFERING
+# 📤 SEND DETECTION TO ESP32 (via UDP)
 # -------------------------------
+def send_to_edge_device(esp32_ip="0.0.0.0", esp32_port=12345):
+    """Send the latest detection (label + angle) to the ESP32."""
+    if _result_dict_global is None or _result_lock_global is None:
+        print("Result dict not set. Call set_global_result_dict first.")
+        return False
 
-def start_audio_listener(lock):
+    with _result_lock_global:
+        label = _result_dict_global.get("label")
+        angle = _result_dict_global.get("angle")
+        if label is None or angle is None:
+            return False
+
+    message = f"{label},{angle:.1f}"
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.sendto(message.encode(), (esp32_ip, esp32_port))
+        print(f"Sent to ESP32: {message}")
+        return True
+    except Exception as e:
+        print(f"Failed to send: {e}")
+        return False
+    finally:
+        sock.close()
+
+# -------------------------------
+# 🎧 AUDIO LISTENER (runs in background thread)
+# -------------------------------
+def start_audio_listener(result_dict, lock):
+    """
+    Continuously receive UDP audio from ESP32, process, and update result_dict.
+    Uses the provided lock for thread‑safe updates.
+    """
+    UDP_IP = "0.0.0.0"
+    UDP_PORT = 12345
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.bind((UDP_IP, UDP_PORT))
+    print("Listening for ESP32 audio on UDP port 12345...")
 
     buffer_L = []
     buffer_R = []
-
-    TARGET_SAMPLES = 16000   # 1 sec window
-    HOP_SIZE = 8000         # 50% overlap
-
+    TARGET_SAMPLES = 16000   # 1 sec window at 16 kHz
+    HOP_SIZE = 8000          # 50% overlap
     running_max = 0.0
 
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.bind((UDP_IP, UDP_PORT))
+    try:
+        while True:
+            data, _ = sock.recvfrom(4096)
+            if not data:
+                continue
 
-    print("Listening for ESP32 audio...")
-    while True:
-        data, _ = sock.recvfrom(4096)
+            # Convert bytes → int16 samples (interleaved stereo: L,R,L,R,...)
+            samples = np.frombuffer(data, dtype=np.int16)
+            left = samples[0::2]
+            right = samples[1::2]
 
-        # Convert bytes → int16
-        samples = np.frombuffer(data, dtype=np.int16)
+            buffer_L.extend(left)
+            buffer_R.extend(right)
 
-        # Split stereo
-        left = samples[0::2]
-        right = samples[1::2]
+            if len(buffer_L) >= TARGET_SAMPLES:
+                mic_1 = torch.tensor(buffer_L[:TARGET_SAMPLES], dtype=torch.float32)
+                mic_2 = torch.tensor(buffer_R[:TARGET_SAMPLES], dtype=torch.float32)
 
-        buffer_L.extend(left)
-        buffer_R.extend(right)
+                # Gain staging
+                mic_1 = F.gain(mic_1, gain_db=6.0)
+                mic_2 = F.gain(mic_2, gain_db=6.0)
 
-        # Process when enough data
-        if len(buffer_L) >= TARGET_SAMPLES:
+                # Stable normalization (running max)
+                current_max = torch.max(torch.abs(torch.stack([mic_1, mic_2]))).item()
+                running_max = max(current_max, 0.9 * running_max)
+                mic_1 = mic_1 / (running_max + 1e-7)
+                mic_2 = mic_2 / (running_max + 1e-7)
 
-            mic_1 = torch.tensor(
-                buffer_L[:TARGET_SAMPLES], dtype=torch.float32)
-            mic_2 = torch.tensor(
-                buffer_R[:TARGET_SAMPLES], dtype=torch.float32)
+                # Stack stereo channels
+                capture = torch.stack([mic_1, mic_2], dim=0)
 
-            # 🎚 Gain
-            mic_1 = F.gain(mic_1, gain_db=6.0)
-            mic_2 = F.gain(mic_2, gain_db=6.0)
+                # Process: classification + angle
+                label, angle = process_audio(capture.numpy(), sample_rate=16000)
 
-            # 🔄 Stable normalization
-            current_max = torch.max(
-                torch.abs(torch.stack([mic_1, mic_2]))).item()
-            running_max = max(current_max, 0.9 * running_max)
+                # Update shared state only for Speech (or you can update always)
+                if label == "Speech":
+                    with lock:
+                        result_dict["label"] = label
+                        result_dict["angle"] = angle
+                    print(f"I heard {label} at {angle:.1f} degrees!")
 
-            mic_1 = mic_1 / (running_max + 1e-7)
-            mic_2 = mic_2 / (running_max + 1e-7)
+                # Overlap buffer for next window
+                buffer_L = buffer_L[HOP_SIZE:]
+                buffer_R = buffer_R[HOP_SIZE:]
 
-            # 🎧 Stack stereo
-            capture = torch.stack([mic_1, mic_2], dim=0)
-
-            # 🔥 PROCESS
-            label, angle = process_audio(capture.numpy(), 16000)
-
-            if label == "Speech":
-                print(f"I heard a {label} at {angle:.1f} degrees!")
-
-            # 🔁 Overlap buffer (performance boost)
-            with lock:
-                latest_result["label"] = label
-                latest_result["angle"] = angle
-
-
-def send_to_edge_device(lock, esp32_ip="192.168.1.100", esp32_port=12346):
-    import socket
-    with lock:
-        if latest_result["label"] is not None:
-            angle_deg = latest_result["angle"]
-            label = latest_result["label"]
-        else:
-            return None
-
-    message = f"{label},{angle_deg:.1f}".encode()
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.sendto(message, (esp32_ip, esp32_port))
-    sock.sendto(message, (esp32_ip, esp32_port))
-    sock.sendto(message, (esp32_ip, esp32_port))
-    return 'Success'
-    sock.sendto(message, (esp32_ip, esp32_port))
+    except KeyboardInterrupt:
+        print("\nAudio listener stopped.")
+    finally:
+        sock.close()
