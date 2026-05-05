@@ -28,6 +28,8 @@ print("Listening for ESP32 audio...")
 # -------------------------------
 # 🧠 GCC-PHAT
 # -------------------------------
+
+
 def gcc_phat(sig, refsig, fs=16000):
     n = sig.shape[0] + refsig.shape[0]
 
@@ -48,6 +50,8 @@ def gcc_phat(sig, refsig, fs=16000):
 # -------------------------------
 # 🎯 PROCESS AUDIO
 # -------------------------------
+
+
 def process_audio(stereo_audio, sample_rate=16000, mic_dist_meters=0.2):
 
     # 1. LOCALIZATION
@@ -80,6 +84,7 @@ def process_audio(stereo_audio, sample_rate=16000, mic_dist_meters=0.2):
     predicted_label = model.config.id2label[predicted_class_id]
 
     return predicted_label, angle
+
 
 # -------------------------------
 # 🎧 STREAMING + BUFFERING

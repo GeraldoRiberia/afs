@@ -20,4 +20,4 @@ while True:
 
     print("L:", left[:5], "R:", right[:5])
 
-    time.sleep(0.3) 
+    time.sleep(0.3)
