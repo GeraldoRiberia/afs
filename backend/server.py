@@ -124,13 +124,13 @@ def normalize_email(email: str) -> str:
 
 def get_password_hash(password: str) -> str:
     # Hash password with SHA256 first to handle any length, then use bcrypt
-    password_hash = hashlib.sha256(password.encode('utf-8')).hexdigest()
+    password_hash = hashlib.sha256(password.encode('utf-8')).digest()
     return pwd_context.hash(password_hash)
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     # Apply same SHA256 transformation before verifying
-    password_hash = hashlib.sha256(plain_password.encode('utf-8')).hexdigest()
+    password_hash = hashlib.sha256(plain_password.encode('utf-8')).digest()
     return pwd_context.verify(password_hash, hashed_password)
 
 
