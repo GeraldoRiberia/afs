@@ -4,6 +4,11 @@ import torch
 import torchaudio.functional as F
 from transformers import ASTForAudioClassification, ASTFeatureExtractor
 
+latest_result = {
+    "label": None,
+    "angle": None,
+}
+
 # -------------------------------
 # 🔥 MODEL SETUP
 # -------------------------------
@@ -20,10 +25,6 @@ model = ASTForAudioClassification.from_pretrained(
 UDP_IP = "0.0.0.0"
 UDP_PORT = 12345
 
-sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-sock.bind((UDP_IP, UDP_PORT))
-
-print("Listening for ESP32 audio...")
 
 # -------------------------------
 # 🧠 GCC-PHAT
@@ -89,53 +90,82 @@ def process_audio(stereo_audio, sample_rate=16000, mic_dist_meters=0.2):
 # -------------------------------
 # 🎧 STREAMING + BUFFERING
 # -------------------------------
-buffer_L = []
-buffer_R = []
 
-TARGET_SAMPLES = 16000   # 1 sec window
-HOP_SIZE = 8000         # 50% overlap
+def start_audio_listener(lock):
 
-running_max = 0.0
+    buffer_L = []
+    buffer_R = []
 
-while True:
-    data, _ = sock.recvfrom(4096)
+    TARGET_SAMPLES = 16000   # 1 sec window
+    HOP_SIZE = 8000         # 50% overlap
 
-    # Convert bytes → int16
-    samples = np.frombuffer(data, dtype=np.int16)
+    running_max = 0.0
 
-    # Split stereo
-    left = samples[0::2]
-    right = samples[1::2]
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.bind((UDP_IP, UDP_PORT))
 
-    buffer_L.extend(left)
-    buffer_R.extend(right)
+    print("Listening for ESP32 audio...")
+    while True:
+        data, _ = sock.recvfrom(4096)
 
-    # Process when enough data
-    if len(buffer_L) >= TARGET_SAMPLES:
+        # Convert bytes → int16
+        samples = np.frombuffer(data, dtype=np.int16)
 
-        mic_1 = torch.tensor(buffer_L[:TARGET_SAMPLES], dtype=torch.float32)
-        mic_2 = torch.tensor(buffer_R[:TARGET_SAMPLES], dtype=torch.float32)
+        # Split stereo
+        left = samples[0::2]
+        right = samples[1::2]
 
-        # 🎚 Gain
-        mic_1 = F.gain(mic_1, gain_db=6.0)
-        mic_2 = F.gain(mic_2, gain_db=6.0)
+        buffer_L.extend(left)
+        buffer_R.extend(right)
 
-        # 🔄 Stable normalization
-        current_max = torch.max(torch.abs(torch.stack([mic_1, mic_2]))).item()
-        running_max = max(current_max, 0.9 * running_max)
+        # Process when enough data
+        if len(buffer_L) >= TARGET_SAMPLES:
 
-        mic_1 = mic_1 / (running_max + 1e-7)
-        mic_2 = mic_2 / (running_max + 1e-7)
+            mic_1 = torch.tensor(
+                buffer_L[:TARGET_SAMPLES], dtype=torch.float32)
+            mic_2 = torch.tensor(
+                buffer_R[:TARGET_SAMPLES], dtype=torch.float32)
 
-        # 🎧 Stack stereo
-        capture = torch.stack([mic_1, mic_2], dim=0)
+            # 🎚 Gain
+            mic_1 = F.gain(mic_1, gain_db=6.0)
+            mic_2 = F.gain(mic_2, gain_db=6.0)
 
-        # 🔥 PROCESS
-        label, angle = process_audio(capture.numpy(), 16000)
+            # 🔄 Stable normalization
+            current_max = torch.max(
+                torch.abs(torch.stack([mic_1, mic_2]))).item()
+            running_max = max(current_max, 0.9 * running_max)
 
-        if label == "Speech":
-            print(f"I heard a {label} at {angle:.1f} degrees!")
+            mic_1 = mic_1 / (running_max + 1e-7)
+            mic_2 = mic_2 / (running_max + 1e-7)
 
-        # 🔁 Overlap buffer (performance boost)
-        buffer_L = buffer_L[HOP_SIZE:]
-        buffer_R = buffer_R[HOP_SIZE:]
+            # 🎧 Stack stereo
+            capture = torch.stack([mic_1, mic_2], dim=0)
+
+            # 🔥 PROCESS
+            label, angle = process_audio(capture.numpy(), 16000)
+
+            if label == "Speech":
+                print(f"I heard a {label} at {angle:.1f} degrees!")
+
+            # 🔁 Overlap buffer (performance boost)
+            with lock:
+                latest_result["label"] = label
+                latest_result["angle"] = angle
+
+
+def send_to_edge_device(lock, esp32_ip="192.168.1.100", esp32_port=12346):
+    import socket
+    with lock:
+        if latest_result["label"] is not None:
+            angle_deg = latest_result["angle"]
+            label = latest_result["label"]
+        else:
+            return None
+
+    message = f"{label},{angle_deg:.1f}".encode()
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.sendto(message, (esp32_ip, esp32_port))
+    sock.sendto(message, (esp32_ip, esp32_port))
+    sock.sendto(message, (esp32_ip, esp32_port))
+    return 'Success'
+    sock.sendto(message, (esp32_ip, esp32_port))
