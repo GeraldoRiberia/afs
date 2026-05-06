@@ -2,8 +2,8 @@ import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
 class BackendConfig {
-  static String baseUrl = 'https://arnavam-afs-backend.hf.space';
-  static String wsUrl = 'wss://arnavam-afs-backend.hf.space/ws';
+  static String baseUrl = 'https://AutoFramingSoftware-afs-backend.hf.space';
+  static String wsUrl = 'wss://AutoFramingSoftware-afs-backend.hf.space/ws';
   static String soundBaseUrl = 'http://127.0.0.1:8001';
 
   static Future<void> init() async {
@@ -20,8 +20,8 @@ class BackendConfig {
       print("✅ Using LOCAL backend: $baseUrl");
     } catch (_) {
       // Fallback to production URL
-      baseUrl = 'https://arnavam-afs-backend.hf.space';
-      wsUrl = 'wss://arnavam-afs-backend.hf.space/ws';
+      baseUrl = 'https://AutoFramingSoftware-afs-backend.hf.space';
+      wsUrl = 'wss://AutoFramingSoftware-afs-backend.hf.space/ws';
       print("🌍 Using PRODUCTION backend: $baseUrl");
     }
 
@@ -31,7 +31,7 @@ class BackendConfig {
       soundBaseUrl = localSoundUrl;
       print("🔊 Using LOCAL sound API: $soundBaseUrl");
     } catch (_) {
-      soundBaseUrl = 'https://arnavam-afs-sound.hf.space'; 
+      soundBaseUrl = 'https://AutoFramingSoftware-afs-sound.hf.space'; 
       print("🌍 Using PRODUCTION sound API: $soundBaseUrl");
     }
   }
