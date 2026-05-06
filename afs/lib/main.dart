@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:ui';
+import 'dart:math' as math;
 
 
 import 'package:camera/camera.dart';
@@ -127,6 +128,9 @@ class _CameraScreenState extends State<CameraScreen> {
   Offset _targetNormalizedCenter = const Offset(0.5, 0.5);
   double _targetScale = 1.0;
   bool _showBoundingBoxes = false;
+  double _userZoomSliderValue = 0.0;
+
+  double get _zoomMultiplier => math.pow(3.0, _userZoomSliderValue).toDouble();
 
   // Device List
   List<dynamic> _availableDevices = [];
@@ -243,6 +247,12 @@ class _CameraScreenState extends State<CameraScreen> {
     }
   }
 
+  void _sendZoomScale() {
+    if (_isConnected && _channel != null) {
+      _channel!.sink.add(jsonEncode({"zoom_scale": _zoomMultiplier}));
+    }
+  }
+
   void _updateAutoFraming(Map<String, dynamic> data) {
     if (data['frame_width'] != null && data['frame_height'] != null) {
       double fw = data['frame_width'].toDouble();
@@ -285,7 +295,9 @@ class _CameraScreenState extends State<CameraScreen> {
 
         if (minSx > targetS) targetS = minSx;
         if (minSy > targetS) targetS = minSy;
-        targetS = targetS.clamp(1.0, 3.5);
+        
+        targetS = targetS * _zoomMultiplier;
+        targetS = targetS.clamp(1.0, 10.0);
 
         if ((targetS - _targetScale).abs() > 0.05) _targetScale = targetS;
         if ((ncx - _targetNormalizedCenter.dx).abs() > 0.03 ||
@@ -795,10 +807,19 @@ class _CameraScreenState extends State<CameraScreen> {
                         fps: _currentFps,
                         mode: _currentMode,
                         hasTarget: _targetScale > 1.05,
+                        userZoomSliderValue: _userZoomSliderValue,
                         soundDirection: _soundDirectionIndicator,
                         soundLabel: _soundLabel,
                         onConnectionToggle: _toggleConnection,
-                        onZoomReset: _resetZoom,
+                        onZoomReset: () {
+                          setState(() => _userZoomSliderValue = 0.0);
+                          _sendZoomScale();
+                          _resetZoom();
+                        },
+                        onZoomScaleChanged: (val) {
+                          setState(() => _userZoomSliderValue = val);
+                          _sendZoomScale();
+                        },
                       ),
                     ],
                   ),
@@ -1108,10 +1129,12 @@ class _HudSidebar extends StatelessWidget {
   final double fps;
   final TrackingMode mode;
   final bool hasTarget;
+  final double userZoomSliderValue;
   final String soundDirection;
   final String? soundLabel;
   final VoidCallback onConnectionToggle;
   final VoidCallback onZoomReset;
+  final ValueChanged<double> onZoomScaleChanged;
 
   const _HudSidebar({
     required this.isConnected,
@@ -1120,10 +1143,12 @@ class _HudSidebar extends StatelessWidget {
     required this.fps,
     required this.mode,
     required this.hasTarget,
+    required this.userZoomSliderValue,
     required this.soundDirection,
     this.soundLabel,
     required this.onConnectionToggle,
     required this.onZoomReset,
+    required this.onZoomScaleChanged,
   });
 
   @override
@@ -1170,10 +1195,25 @@ class _HudSidebar extends StatelessWidget {
                 label: 'AUTO ZOOM',
                 value: zoom,
                 icon: Icons.zoom_in_rounded,
-                valueColor: hasTarget
-                    ? AfsTheme.neonGreen
-                    : AfsTheme.ashGray.withValues(alpha: 0.5),
-                onTap: hasTarget ? onZoomReset : null,
+                onTap: onZoomReset,
+              ),
+              const SizedBox(height: 4),
+              SliderTheme(
+                data: SliderThemeData(
+                  activeTrackColor: AfsTheme.neonGreen,
+                  inactiveTrackColor: AfsTheme.neonGreen.withValues(alpha: 0.2),
+                  thumbColor: AfsTheme.neonGreen,
+                  overlayColor: AfsTheme.neonGreen.withValues(alpha: 0.1),
+                  trackHeight: 2.0,
+                  thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6.0),
+                  overlayShape: const RoundSliderOverlayShape(overlayRadius: 14.0),
+                ),
+                child: Slider(
+                  value: userZoomSliderValue,
+                  min: -1.0,
+                  max: 1.0,
+                  onChanged: onZoomScaleChanged,
+                ),
               ),
               const SizedBox(height: 10),
 

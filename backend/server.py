@@ -51,6 +51,7 @@ recording_filename = ""
 current_cx = 0.5
 current_cy = 0.5
 current_scale = 1.0
+zoom_multiplier = 1.0
 
 # --- Real-time Target Tracking State ---
 current_target_angle = None
@@ -213,7 +214,7 @@ def apply_center_stage_crop(frame, tracking_data):
     the frame based on the tracking target bounding box.
     Returns the cropped frame.
     """
-    global current_cx, current_cy, current_scale, current_target_angle, current_target_distance
+    global current_cx, current_cy, current_scale, current_target_angle, current_target_distance, zoom_multiplier
 
     h, w = frame.shape[:2]
 
@@ -266,6 +267,9 @@ def apply_center_stage_crop(frame, tracking_data):
             target_scale = max(1.0, min(target_scale, 3.0))
 
     if target_found:
+        # Apply user zoom multiplier
+        target_scale = max(1.0, min(target_scale * zoom_multiplier, 10.0))
+
         # Calculate distance and angle from the frame center (w/2, h/2) to the target bounding box center (box_cx, box_cy)
         center_x, center_y = w / 2.0, h / 2.0
 
@@ -420,8 +424,7 @@ async def startup_event():
         await users_collection.create_index("email", unique=True)
         logger.info("Connected to MongoDB and initialized collections.")
     except Exception as e:
-        logger.warning(f"MongoDB connection failed on startup: {
-                       e}. Starting reconnection loop.")
+        logger.warning(f"MongoDB connection failed on startup: {e}. Starting reconnection loop.")
         mongo_client = None
         users_collection = None
         audio_recordings_collection = None
@@ -512,7 +515,7 @@ async def verify_token(current_user: UserPublic = Depends(get_current_user)):
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
-    global is_recording, video_writer, recording_filename, latest_obs_frame, is_obs_active
+    global is_recording, video_writer, recording_filename, latest_obs_frame, is_obs_active, zoom_multiplier
 
     await websocket.accept()
     logger.info("New WebSocket connection established.")
@@ -528,20 +531,20 @@ async def websocket_endpoint(websocket: WebSocket):
                 try:
                     payload = json.loads(message["text"])
                     if "mode" in payload and payload["mode"] != current_mode:
-                        logger.info(f"Switching mode from {
-                                    current_mode} to {payload['mode']}")
+                        logger.info(f"Switching mode from {current_mode} to {payload['mode']}")
                         current_mode = payload["mode"]
                         await websocket.send_json({"type": "mode_ack", "mode": current_mode})
+                    elif "zoom_scale" in payload:
+                        zoom_multiplier = float(payload["zoom_scale"])
+                        logger.info(f"Updated zoom multiplier to {zoom_multiplier}")
                     elif "command" in payload:
                         # Handle recording commands
                         command = payload["command"]
                         if command == "start_recording":
                             if not is_recording:
                                 is_recording = True
-                                recording_filename = f"capture_{
-                                    datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4"
-                                logger.info(f"Started recording to {
-                                            recording_filename}")
+                                recording_filename = f"capture_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4"
+                                logger.info(f"Started recording to {recording_filename}")
                                 await websocket.send_json({"type": "recording_ack", "status": "started"})
                         elif command == "stop_recording":
                             if is_recording:
@@ -549,8 +552,7 @@ async def websocket_endpoint(websocket: WebSocket):
                                 if video_writer is not None:
                                     video_writer.release()
                                     video_writer = None
-                                logger.info(f'''Stopped recording. File saved as {
-                                            recording_filename}''')
+                                logger.info(f'''Stopped recording. File saved as {recording_filename}''')
                         elif command == "start_obs":
                             if not is_obs_active:
                                 is_obs_active = True
@@ -589,8 +591,7 @@ async def websocket_endpoint(websocket: WebSocket):
                         executor, run_inference, frame, current_mode
                     )
                 except Exception as e:
-                    logger.error(f"Error processing frame in {
-                                 current_mode} mode: {e}")
+                    logger.error(f"Error processing frame in {current_mode} mode: {e}")
                     response_data = {"error": str(e)}
 
                 # Send results back to client
