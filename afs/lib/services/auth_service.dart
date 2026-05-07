@@ -85,6 +85,21 @@ class AuthService {
     return null;
   }
 
+  Future<void> enrollFace(String videoPath) async {
+    final token = await getToken();
+    if (token == null || token.isEmpty) {
+      throw const AuthException('Not logged in');
+    }
+
+    final uri = Uri.parse('$_baseUrl/api/enroll_face');
+    final request = http.MultipartRequest('POST', uri)
+      ..headers['Authorization'] = 'Bearer $token'
+      ..files.add(await http.MultipartFile.fromPath('video', videoPath));
+
+    final response = await http.Response.fromStream(await request.send());
+    _throwIfFailed(response);
+  }
+
   Future<bool> isLoggedIn() async {
     final token = await getToken();
     return token != null && token.isNotEmpty;

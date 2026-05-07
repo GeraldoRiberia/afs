@@ -18,6 +18,8 @@ import math
 from pydantic import BaseModel, Field
 from pymongo import AsyncMongoClient
 import bcrypt
+import pickle
+from bson import ObjectId
 from jose import JWTError, jwt
 from dotenv import load_dotenv
 from pathlib import Path
@@ -509,6 +511,41 @@ async def verify_token(current_user: UserPublic = Depends(get_current_user)):
     return current_user
 
 
+@app.post("/api/enroll_face")
+async def enroll_face(
+    video: UploadFile = File(...),
+    current_user: UserPublic = Depends(get_current_user)
+):
+    try:
+        temp_path = f"temp_enroll_{uuid.uuid4()}.mp4"
+        with open(temp_path, "wb") as buffer:
+            shutil.copyfileobj(video.file, buffer)
+            
+        logger.info(f"Extracting embeddings for user {current_user.id}")
+        
+        def run_extraction():
+            return face_service.extract_embeddings_from_video(temp_path)
+            
+        embeddings, num_frames = await asyncio.get_event_loop().run_in_executor(
+            executor, run_extraction
+        )
+        
+        pickled_embeddings = pickle.dumps(embeddings)
+        await users_collection.update_one(
+            {"_id": ObjectId(current_user.id)},
+            {"$set": {"embeddings": pickled_embeddings}}
+        )
+        
+        os.remove(temp_path)
+        
+        return {"ok": True, "message": "Face enrolled successfully", "frames_used": num_frames}
+    except Exception as e:
+        logger.error(f"Enrollment failed: {e}")
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     global is_recording, video_writer, recording_filename, latest_obs_frame, is_obs_active, zoom_multiplier
@@ -517,6 +554,7 @@ async def websocket_endpoint(websocket: WebSocket):
     logger.info("New WebSocket connection established.")
 
     current_mode = "single"  # Default mode
+    ws_user_embeddings = None
 
     try:
         while True:
@@ -530,6 +568,21 @@ async def websocket_endpoint(websocket: WebSocket):
                         logger.info(f"Switching mode from {current_mode} to {payload['mode']}")
                         current_mode = payload["mode"]
                         await websocket.send_json({"type": "mode_ack", "mode": current_mode})
+                    elif "type" in payload and payload["type"] == "auth":
+                        token = payload.get("token")
+                        try:
+                            token_data = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+                            user_id = token_data.get("sub")
+                            if user_id:
+                                user = await users_collection.find_one({"_id": ObjectId(user_id)})
+                                if user and "embeddings" in user and user["embeddings"]:
+                                    ws_user_embeddings = pickle.loads(user["embeddings"])
+                                    logger.info(f"Loaded custom face embeddings for user {user_id}")
+                                    await websocket.send_json({"type": "auth_ack", "status": "enrolled"})
+                                else:
+                                    await websocket.send_json({"type": "auth_ack", "status": "no_enrollment"})
+                        except Exception as e:
+                            logger.error(f"WS Auth failed: {e}")
                     elif "zoom_scale" in payload:
                         zoom_multiplier = float(payload["zoom_scale"])
                         logger.info(f"Updated zoom multiplier to {zoom_multiplier}")
@@ -572,9 +625,9 @@ async def websocket_endpoint(websocket: WebSocket):
                     continue
 
                 # Prepare inference function
-                def run_inference(f, mode):
+                def run_inference(f, mode, embeddings=None):
                     if mode == "single":
-                        return single_tracker.process_frame(f)
+                        return single_tracker.process_frame(f, custom_embeddings=embeddings)
                     elif mode == "multi":
                         return multi_tracker.process_frame(f)
                     else:
@@ -584,7 +637,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 response_data = {}
                 try:
                     response_data = await asyncio.get_event_loop().run_in_executor(
-                        executor, run_inference, frame, current_mode
+                        executor, run_inference, frame, current_mode, ws_user_embeddings
                     )
                 except Exception as e:
                     logger.error(f"Error processing frame in {current_mode} mode: {e}")

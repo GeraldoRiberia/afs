@@ -14,6 +14,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:image/image.dart' as img;
 import 'package:http/http.dart' as http;
+import 'package:flutter_tts/flutter_tts.dart';
 
 import 'theme.dart';
 import 'screens/settings_screen.dart';
@@ -93,6 +94,8 @@ class CameraScreen extends StatefulWidget {
 }
 
 class _CameraScreenState extends State<CameraScreen> {
+  final FlutterTts _flutterTts = FlutterTts();
+
   // Mobile Controller
   CameraController? _mobileController;
 
@@ -155,21 +158,43 @@ class _CameraScreenState extends State<CameraScreen> {
   // ── HUD visibility ─────────────────────────────────────────────────────────
   bool _hudVisible = true;
 
+  // ── Enrollment State ───────────────────────────────────────────────────────
+  bool _isEnrolling = false;
+  String _enrollmentInstruction = '';
+  bool _isEnrollmentProcessing = false;
+
 
   @override
   void initState() {
     super.initState();
+    _initTts();
     _connectWebSocket();
     _initializeCameraList();
     _startSoundPolling();
   }
 
-  void _connectWebSocket() {
+  void _initTts() async {
+    await _flutterTts.setLanguage("en-US");
+    await _flutterTts.setSpeechRate(0.5);
+    await _flutterTts.setVolume(1.0);
+    await _flutterTts.setPitch(1.0);
+  }
+
+  Future<void> _speak(String text) async {
+    await _flutterTts.speak(text);
+  }
+
+  void _connectWebSocket() async {
     if (!_autoReconnect) return;
     try {
       _channel = WebSocketChannel.connect(Uri.parse(_backendUrl));
       _isConnected = true;
       _sendModeUpdate();
+
+      final token = await AuthService.instance.getToken();
+      if (token != null && token.isNotEmpty) {
+        _channel!.sink.add(jsonEncode({"type": "auth", "token": token}));
+      }
 
       _channel!.stream.listen((message) {
         try {
@@ -254,6 +279,12 @@ class _CameraScreenState extends State<CameraScreen> {
   }
 
   void _updateAutoFraming(Map<String, dynamic> data) {
+    if (_isEnrolling) {
+      _targetScale = 1.0;
+      _targetNormalizedCenter = const Offset(0.5, 0.5);
+      return;
+    }
+
     if (data['frame_width'] != null && data['frame_height'] != null) {
       double fw = data['frame_width'].toDouble();
       double fh = data['frame_height'].toDouble();
@@ -478,7 +509,7 @@ class _CameraScreenState extends State<CameraScreen> {
     }
   }
 
-  Future<void> _stopRecording() async {
+  Future<String?> _stopRecording() async {
     _recordingTimer?.cancel();
     _recordingTimer = null;
     String? savedPath;
@@ -508,10 +539,142 @@ class _CameraScreenState extends State<CameraScreen> {
         _recordingStart = null;
         _recordingElapsed = Duration.zero;
       });
-      if (savedPath != null) {
+      if (savedPath != null && !_isEnrolling) {
         _showSavedSnackbar(savedPath);
       }
     }
+    return savedPath;
+  }
+
+  Future<void> _startEnrollmentSequence() async {
+    if (!await AuthService.instance.isLoggedIn()) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Please log in to enroll your face.')));
+      return;
+    }
+
+    setState(() {
+      _isEnrolling = true;
+      _enrollmentInstruction = 'Get ready...';
+      _isEnrollmentProcessing = false;
+    });
+
+    await Future.delayed(const Duration(seconds: 1));
+    if (!mounted || !_isEnrolling) return;
+    
+    await _startRecording();
+    
+    // Step 1: Look Straight
+    setState(() => _enrollmentInstruction = 'Look straight at the camera');
+    await _speak('Look straight at the camera');
+    bool stepDone = false;
+    DateTime startTime = DateTime.now();
+    while (mounted && _isEnrolling && !stepDone) {
+      if (_latestTrackingResult != null) {
+        final boxes = _latestTrackingResult!['boxes'] as List?;
+        if (boxes != null && boxes.isNotEmpty) {
+          final yaw = boxes.first['yaw'] as num? ?? 0.0;
+          final pitch = boxes.first['pitch'] as num? ?? 0.0;
+          if (yaw.abs() < 0.15 && pitch.abs() < 0.15) {
+             stepDone = true;
+          }
+        }
+      }
+      if (DateTime.now().difference(startTime).inSeconds > 5) stepDone = true; // timeout
+      await Future.delayed(const Duration(milliseconds: 200));
+    }
+    
+    await _speak('Good');
+    await Future.delayed(const Duration(milliseconds: 2000));
+    if (!mounted || !_isEnrolling) return;
+
+    // Step 2: Turn Head
+    setState(() => _enrollmentInstruction = 'Slowly turn your head to one side');
+    await _speak('Slowly turn your head to one side');
+    stepDone = false;
+    startTime = DateTime.now();
+    double firstTurnYaw = 0.0;
+    while (mounted && _isEnrolling && !stepDone) {
+      if (_latestTrackingResult != null) {
+        final boxes = _latestTrackingResult!['boxes'] as List?;
+        if (boxes != null && boxes.isNotEmpty) {
+          final yaw = boxes.first['yaw'] as num? ?? 0.0;
+          if (yaw.abs() > 0.15) {
+             firstTurnYaw = yaw.toDouble();
+             stepDone = true;
+          }
+        }
+      }
+      if (DateTime.now().difference(startTime).inSeconds > 8) stepDone = true;
+      await Future.delayed(const Duration(milliseconds: 200));
+    }
+
+    await _speak('Great');
+    await Future.delayed(const Duration(milliseconds: 2000));
+    if (!mounted || !_isEnrolling) return;
+
+    // Step 3: Turn Head Opposite
+    setState(() => _enrollmentInstruction = 'Now slowly turn to the other side');
+    await _speak('Now slowly turn your head to the other side');
+    stepDone = false;
+    startTime = DateTime.now();
+    while (mounted && _isEnrolling && !stepDone) {
+      if (_latestTrackingResult != null) {
+        final boxes = _latestTrackingResult!['boxes'] as List?;
+        if (boxes != null && boxes.isNotEmpty) {
+          final yaw = boxes.first['yaw'] as num? ?? 0.0;
+          if (firstTurnYaw > 0 ? yaw < -0.15 : yaw > 0.15) stepDone = true;
+        }
+      }
+      if (DateTime.now().difference(startTime).inSeconds > 8) stepDone = true;
+      await Future.delayed(const Duration(milliseconds: 200));
+    }
+
+    await _speak('Perfect');
+    await Future.delayed(const Duration(milliseconds: 2000));
+    if (!mounted || !_isEnrolling) return;
+
+    // Step 4: Look Up or Down
+    setState(() => _enrollmentInstruction = 'Look slightly up or down');
+    await _speak('Finally, look slightly up or down');
+    stepDone = false;
+    startTime = DateTime.now();
+    while (mounted && _isEnrolling && !stepDone) {
+      if (_latestTrackingResult != null) {
+        final boxes = _latestTrackingResult!['boxes'] as List?;
+        if (boxes != null && boxes.isNotEmpty) {
+          final pitch = boxes.first['pitch'] as num? ?? 0.0;
+          if (pitch.abs() > 0.10) stepDone = true;
+        }
+      }
+      if (DateTime.now().difference(startTime).inSeconds > 6) stepDone = true;
+      await Future.delayed(const Duration(milliseconds: 200));
+    }
+    
+    await _speak('Done');
+    await Future.delayed(const Duration(milliseconds: 2000));
+
+    setState(() {
+      _enrollmentInstruction = 'Processing...';
+      _isEnrollmentProcessing = true;
+    });
+
+    String? savedPath = await _stopRecording();
+
+    if (savedPath != null) {
+      try {
+        await AuthService.instance.enrollFace(savedPath);
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Face Enrolled Successfully!')));
+          _disconnectWebSocket();
+          _autoReconnect = true;
+          _connectWebSocket();
+        }
+      } catch (e) {
+        if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Enrollment Failed: $e')));
+      }
+    }
+
+    if (mounted) setState(() { _isEnrolling = false; _isEnrollmentProcessing = false; });
   }
 
   void _showSavedSnackbar(String path) {
@@ -782,6 +945,43 @@ class _CameraScreenState extends State<CameraScreen> {
 
               // Removed duplicated Top Status bar since we moved it above the Row
 
+              // ── 3. Face Enrollment Overlay ─────────────────────────────────
+              if (_isEnrolling)
+                Positioned.fill(
+                  child: Container(
+                    color: Colors.black.withValues(alpha: 0.8),
+                    child: Center(
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Container(
+                            width: 280,
+                            height: 380,
+                            decoration: BoxDecoration(
+                              border: Border.all(
+                                color: _isEnrollmentProcessing ? AfsTheme.mintGreen : AfsTheme.neonGreen, 
+                                width: 4
+                              ),
+                              borderRadius: BorderRadius.circular(200),
+                            ),
+                          ),
+                          const SizedBox(height: 40),
+                          Text(
+                            _enrollmentInstruction,
+                            style: AfsTheme.displaySmall(AfsTheme.neonGreen).copyWith(fontSize: 24),
+                            textAlign: TextAlign.center,
+                          ),
+                          if (_isEnrollmentProcessing)
+                            const Padding(
+                              padding: EdgeInsets.only(top: 20),
+                              child: CircularProgressIndicator(color: AfsTheme.neonGreen),
+                            ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+
               // ── 4. Right HUD Sidebar ───────────────────────────────────
               // On wide screens: reserved inline space.
               // On narrow screens: floating overlay with semi-transparent backdrop.
@@ -817,6 +1017,7 @@ class _CameraScreenState extends State<CameraScreen> {
                           _sendZoomScale();
                           _resetZoom();
                         },
+                        onEnrollFace: _startEnrollmentSequence,
                         onZoomScaleChanged: (val) {
                           setState(() => _userZoomSliderValue = val);
                           _sendZoomScale();
@@ -1135,6 +1336,7 @@ class _HudSidebar extends StatelessWidget {
   final String? soundLabel;
   final VoidCallback onConnectionToggle;
   final VoidCallback onZoomReset;
+  final VoidCallback onEnrollFace;
   final ValueChanged<double> onZoomScaleChanged;
 
   const _HudSidebar({
@@ -1149,6 +1351,7 @@ class _HudSidebar extends StatelessWidget {
     this.soundLabel,
     required this.onConnectionToggle,
     required this.onZoomReset,
+    required this.onEnrollFace,
     required this.onZoomScaleChanged,
   });
 
@@ -1230,6 +1433,21 @@ class _HudSidebar extends StatelessWidget {
                 value: soundDirection,
                 icon: Icons.mic_rounded,
                 valueColor: soundDirection != '—' ? AfsTheme.neonGreen : AfsTheme.ashGray.withValues(alpha: 0.4),
+              ),
+              const SizedBox(height: 10),
+
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton.icon(
+                  onPressed: onEnrollFace,
+                  icon: const Icon(Icons.face_retouching_natural, size: 16),
+                  label: const Text('Enroll Face'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AfsTheme.surfaceHigh,
+                    foregroundColor: AfsTheme.neonGreen,
+                    side: const BorderSide(color: AfsTheme.neonGreen, width: 1),
+                  ),
+                ),
               ),
 
               const Spacer(),

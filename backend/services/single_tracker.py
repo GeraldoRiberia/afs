@@ -73,7 +73,7 @@ class SingleTracker:
         if not cache_loaded:
             logger.warning(f"Cache invalid or not found at {self.cache_file}. Returning empty embeddings. Please run Model/face_model.py to generate cache.")
         
-    def process_frame(self, frame):
+    def process_frame(self, frame, custom_embeddings=None):
         """
         Process a single BGR image frame for single face tracking.
         Returns a dictionary with tracking results.
@@ -97,14 +97,45 @@ class SingleTracker:
             if results and len(results) > 0 and results[0].boxes.id is not None:
                 boxes = results[0].boxes.xyxy.cpu().numpy().astype(int)
                 track_ids = results[0].boxes.id.cpu().numpy().astype(int)
+                
+                keypoints = None
+                if hasattr(results[0], 'keypoints') and results[0].keypoints is not None:
+                    keypoints = results[0].keypoints.xy.cpu().numpy()
 
-                for box, track_id in zip(boxes, track_ids):
+                for idx, (box, track_id) in enumerate(zip(boxes, track_ids)):
                     x1, y1, x2, y2 = box.tolist()
                     track_id = int(track_id)
                     max_similarity = 0.0
                     
+                    # Compute Head Pose
+                    yaw = 0.0
+                    pitch = 0.0
+                    if keypoints is not None and len(keypoints) > idx:
+                        kpts = keypoints[idx]
+                        if len(kpts) >= 5:
+                            lex, ley = kpts[0]
+                            rex, rey = kpts[1]
+                            nx, ny = kpts[2]
+                            lmx, lmy = kpts[3]
+                            rmx, rmy = kpts[4]
+                            
+                            # Yaw: (-) turned left, (+) turned right
+                            l_nose = abs(nx - lex)
+                            r_nose = abs(nx - rex)
+                            yaw = (l_nose - r_nose) / (l_nose + r_nose + 1e-6)
+                            
+                            # Pitch: (-) looking up, (+) looking down
+                            eye_cy = (ley + rey) / 2
+                            mouth_cy = (lmy + rmy) / 2
+                            n_eye = ny - eye_cy
+                            n_mouth = mouth_cy - ny
+                            pitch = (n_eye - n_mouth) / (n_eye + n_mouth + 1e-6)
+                            
                     # Lock resolution logic
-                    if track_id not in self.known_tracks and len(self.main_user_embeddings) > 0:
+                    
+                    embeddings_to_check = custom_embeddings if custom_embeddings is not None and len(custom_embeddings) > 0 else self.main_user_embeddings
+                    
+                    if track_id not in self.known_tracks and len(embeddings_to_check) > 0:
                         if track_id not in self.track_retries:
                             self.track_retries[track_id] = 0
 
@@ -115,7 +146,9 @@ class SingleTracker:
                             # Strict check
                             current_face = DeepFace.represent(face_crop, model_name=self.model_name, enforce_detection=False)[0]["embedding"]
                             
-                            for user_embedding in self.main_user_embeddings:
+                            embeddings_to_check = custom_embeddings if custom_embeddings is not None and len(custom_embeddings) > 0 else self.main_user_embeddings
+                            
+                            for user_embedding in embeddings_to_check:
                                 sim = np.dot(user_embedding, current_face) / (np.linalg.norm(user_embedding) * np.linalg.norm(current_face))
                                 if sim > max_similarity:
                                     max_similarity = sim
@@ -156,7 +189,9 @@ class SingleTracker:
                             "x2": x2, "y2": y2,
                             "is_target": True,
                             "label": label,
-                            "similarity": max_similarity if 'max_similarity' in locals() else -1.0
+                            "similarity": max_similarity if 'max_similarity' in locals() else -1.0,
+                            "yaw": float(yaw),
+                            "pitch": float(pitch)
                         })
                     elif track_id in self.track_retries:
                         # Draw scanning box
@@ -167,7 +202,9 @@ class SingleTracker:
                             "x2": x2, "y2": y2,
                             "is_target": False,
                             "label": label,
-                            "similarity": max_similarity if 'max_similarity' in locals() else -1.0
+                            "similarity": max_similarity if 'max_similarity' in locals() else -1.0,
+                            "yaw": float(yaw),
+                            "pitch": float(pitch)
                         })
                     
         except Exception as e:
