@@ -1,8 +1,9 @@
 import 'dart:convert';
 
+import 'dart:io';
 import 'package:http/http.dart' as http;
 import 'package:flutter/foundation.dart';
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:path_provider/path_provider.dart';
 import 'config.dart';
 
 class AuthException implements Exception {
@@ -18,10 +19,14 @@ class AuthService {
   AuthService._();
 
   static final AuthService instance = AuthService._();
-  final _storage = const FlutterSecureStorage();
-  final String _tokenKey = 'jwt_token';
+  final String _tokenFileName = 'afs_jwt_token.txt';
 
   String get _baseUrl => BackendConfig.baseUrl;
+
+  Future<File> get _tokenFile async {
+    final directory = await getApplicationDocumentsDirectory();
+    return File('${directory.path}/$_tokenFileName');
+  }
 
   Future<void> register({
     required String fullName,
@@ -62,23 +67,35 @@ class AuthService {
   }
 
   Future<void> logout() async {
-    await _storage.delete(key: _tokenKey);
+    try {
+      final file = await _tokenFile;
+      if (await file.exists()) {
+        await file.delete();
+      }
+    } catch (_) {}
   }
 
   Future<String?> getToken() async {
-    return await _storage.read(key: _tokenKey);
+    try {
+      final file = await _tokenFile;
+      if (await file.exists()) {
+        return await file.readAsString();
+      }
+    } catch (_) {}
+    return null;
   }
 
   Future<bool> isLoggedIn() async {
     final token = await getToken();
-    return token != null;
+    return token != null && token.isNotEmpty;
   }
 
   Future<void> _saveTokenFromResponse(http.Response response) async {
     try {
       final body = jsonDecode(response.body);
       if (body is Map<String, dynamic> && body['token'] is String) {
-        await _storage.write(key: _tokenKey, value: body['token'] as String);
+        final file = await _tokenFile;
+        await file.writeAsString(body['token'] as String);
       }
     } catch (_) {
       // Ignore if token is not found or parsing fails

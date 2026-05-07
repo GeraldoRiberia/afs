@@ -14,14 +14,12 @@ class LoginScreen extends StatefulWidget {
 
 class _LoginScreenState extends State<LoginScreen> {
   final _formKey = GlobalKey<FormState>();
-  final _nameCtrl = TextEditingController();
   final _emailCtrl = TextEditingController();
   final _passCtrl = TextEditingController();
   bool _loading = false;
 
   @override
   void dispose() {
-    _nameCtrl.dispose();
     _emailCtrl.dispose();
     _passCtrl.dispose();
     super.dispose();
@@ -142,13 +140,7 @@ class _LoginScreenState extends State<LoginScreen> {
 
                       const SizedBox(height: 40),
 
-                      // Full Name field
-                      _LoginField(
-                        icon: Icons.person_outline_rounded,
-                        hint: 'Full Name',
-                        controller: _nameCtrl,
-                      ),
-                      const SizedBox(height: 14),
+
 
                       // Email field
                       _LoginField(

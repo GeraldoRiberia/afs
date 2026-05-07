@@ -281,20 +281,9 @@ class _CameraScreenState extends State<CameraScreen> {
         double nW = targetRect.width / fw;
         double nH = targetRect.height / fh;
 
-        double alignX = (ncx * 2.0) - 1.0;
-        double alignY = (ncy * 2.0) - 1.0;
-
         double maxDim = (nW > nH ? nW : nH);
         double paddingFactor = 2.0;
         double targetS = 1.0 / (maxDim * paddingFactor);
-
-        double minSx = 1.0;
-        if (alignX.abs() < 0.95) minSx = 1.0 / (1.0 - alignX.abs());
-        double minSy = 1.0;
-        if (alignY.abs() < 0.95) minSy = 1.0 / (1.0 - alignY.abs());
-
-        if (minSx > targetS) targetS = minSx;
-        if (minSy > targetS) targetS = minSy;
         
         targetS = targetS * _zoomMultiplier;
         targetS = targetS.clamp(1.0, 10.0);
@@ -662,7 +651,7 @@ class _CameraScreenState extends State<CameraScreen> {
   }
 
   String get _zoomLabel =>
-      '${_targetScale.toStringAsFixed(1)}×';
+      '${_zoomMultiplier.toStringAsFixed(2)}×';
 
   @override
   Widget build(BuildContext context) {
@@ -679,9 +668,7 @@ class _CameraScreenState extends State<CameraScreen> {
         double S = _targetScale;
         double ncx = _targetNormalizedCenter.dx;
         double ncy = _targetNormalizedCenter.dy;
-        double alignX = (ncx * 2.0) - 1.0;
-        double alignY = (ncy * 2.0) - 1.0;
-        Alignment targetAlignment = Alignment(alignX, alignY);
+        Offset targetCenter = _targetNormalizedCenter;
 
         const double controlBarH = 72.0;
         // Removed unused topBarH
@@ -745,13 +732,44 @@ class _CameraScreenState extends State<CameraScreen> {
                       return TweenAnimationBuilder<Alignment>(
                         duration: const Duration(milliseconds: 1500),
                         curve: Curves.fastOutSlowIn,
+                        // We use Alignment simply as a convenient 2D vector for ncx/ncy interpolation
                         tween: AlignmentTween(
-                            begin: Alignment.center, end: targetAlignment),
-                        builder: (context, alignment, innerChild) {
-                          return Transform(
-                            alignment: alignment,
-                            transform: Matrix4.identity()..scale(scale, scale),
-                            child: innerChild,
+                            begin: const Alignment(0.5, 0.5), 
+                            end: Alignment(targetCenter.dx, targetCenter.dy)),
+                        builder: (context, centerVec, innerChild) {
+                          double cw = 1.0 / scale;
+                          double ch = 1.0 / scale;
+                          
+                          // Clamp the target center so we don't pan out of bounds and reveal black borders
+                          double cx = centerVec.x.clamp(cw / 2, 1.0 - cw / 2);
+                          double cy = centerVec.y.clamp(ch / 2, 1.0 - ch / 2);
+                          
+                          double aX = 0.0;
+                          double aY = 0.0;
+                          if (scale > 1.001) {
+                            // Compute the precise Transform Alignment needed to map (cx, cy) to the center of the screen
+                            aX = (scale / (scale - 1.0)) * (cx * 2.0 - 1.0);
+                            aY = (scale / (scale - 1.0)) * (cy * 2.0 - 1.0);
+                          }
+                          
+                          return Stack(
+                            fit: StackFit.expand,
+                            children: [
+                              Transform(
+                                alignment: Alignment(aX, aY),
+                                transform: Matrix4.identity()..scale(scale, scale),
+                                child: innerChild,
+                              ),
+                              if (_showBoundingBoxes)
+                                CustomPaint(
+                                  painter: BoundingBoxPainter(
+                                    data: _latestTrackingResult,
+                                    mode: _currentMode,
+                                    scaleOffset: scale,
+                                    alignOffset: Alignment(aX, aY),
+                                  ),
+                                ),
+                            ],
                           );
                         },
                         child: child,
@@ -761,23 +779,6 @@ class _CameraScreenState extends State<CameraScreen> {
                   ),
                 ),
               ),
-
-              // ── 2. Bounding Box Overlay ────────────────────────────────
-              if (_showBoundingBoxes)
-                Positioned(
-                  top: 0,
-                  left: 0,
-                  right: reserveSpace ? sidebarW : 0,
-                  bottom: controlBarH,
-                  child: CustomPaint(
-                    painter: BoundingBoxPainter(
-                      data: _latestTrackingResult,
-                      mode: _currentMode,
-                      scaleOffset: S,
-                      alignOffset: targetAlignment,
-                    ),
-                  ),
-                ),
 
               // Removed duplicated Top Status bar since we moved it above the Row
 

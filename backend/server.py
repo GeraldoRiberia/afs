@@ -17,7 +17,7 @@ import hashlib
 import math
 from pydantic import BaseModel, Field
 from pymongo import AsyncMongoClient
-from passlib.context import CryptContext
+import bcrypt
 from jose import JWTError, jwt
 from dotenv import load_dotenv
 from pathlib import Path
@@ -86,7 +86,7 @@ audio_recordings_collection = None
 audio_settings_collection = None
 audio_angles_collection = None
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
 
 # JWT Configuration
 SECRET_KEY = os.getenv(
@@ -126,15 +126,11 @@ def normalize_email(email: str) -> str:
 
 
 def get_password_hash(password: str) -> str:
-    # Hash password with SHA256 first to handle any length, then use bcrypt
-    password_hash = hashlib.sha256(password.encode('utf-8')).digest()
-    return pwd_context.hash(password_hash)
+    return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    # Apply same SHA256 transformation before verifying
-    password_hash = hashlib.sha256(plain_password.encode('utf-8')).digest()
-    return pwd_context.verify(password_hash, hashed_password)
+    return bcrypt.checkpw(plain_password.encode('utf-8'), hashed_password.encode('utf-8'))
 
 
 def require_users_collection():
