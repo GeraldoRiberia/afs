@@ -1,7 +1,8 @@
 # AFS (Auto Framing Software)
 
 ## Project Intent and Context
-AFS (Auto Framing Software) is an AI-powered camera tracking and framing application. It acts as an automated camera operator by utilizing a Flutter frontend to capture video and a Python backend (FastAPI) to perform real-time tracking inference (YOLOv8, DeepFace, OpenCV). The backend tracks targets (single person or multiple people), applies exponential moving average (EMA) for smooth camera panning and zooming (Center Stage), and streams the framed result back or over to OBS (via MJPEG) and virtual cameras.
+
+AFS (Auto Framing Software) is an AI-powered camera tracking and framing application. It acts as an automated camera operator by utilizing a Flutter frontend to capture video and a Python backend (FastAPI) to perform real-time tracking inference (YOLOv8, DeepFace, OpenCV). The backend tracks targets (single person or multiple people), applies exponential moving average (EMA) for smooth camera panning and zooming, and streams the framed result back or over to OBS (via MJPEG) and virtual cameras.
 
 This system is designed to provide high-quality framing for broadcasts, streams, or recordings without the need for manual camera operation.
 
@@ -28,19 +29,22 @@ This system is designed to provide high-quality framing for broadcasts, streams,
   - Contains research, prototypes, object tracking scripts, audio streaming tests, and raw model files like `yolov8n-face.pt`.
 
 ## Architecture & Communication
+
 1. **Authentication:** The frontend uses HTTP POST to `/auth/login` or `/auth/register` to receive a JWT. The token is securely stored via `flutter_secure_storage`.
 2. **Video Streaming:** The frontend connects via WebSocket (`/ws`) to `backend/server.py`. It continuously sends JPEG-encoded frames (converted to byte arrays) from the camera to the backend.
-3. **Inference & Auto-framing:** The backend performs inference (either "single" or "multi" mode) via ThreadPoolExecutor to prevent event loop blocking. It computes a bounding box, applies Center Stage smoothing (EMA), and returns coordinate tracking data back to the frontend.
+3. **Inference & Auto-framing:** The backend performs inference (either "single" or "multi" mode) via ThreadPoolExecutor to prevent event loop blocking. It computes a bounding box, applies Zoom smoothing (EMA), and returns coordinate tracking data back to the frontend.
 4. **Recording/OBS:** The backend can also record cropped frames directly to MP4 or output a stream via an HTTP `/obs_feed` endpoint that OBS Studio can consume as a Media Source.
 
 ## Setup & Execution
 
 ### Prerequisites
+
 - Flutter SDK (^3.9.2)
 - Python 3.10+
 - MongoDB (running locally or accessible via URI)
 
 ### Running the Backend
+
 ```bash
 cd backend
 python -m venv .venv
@@ -53,6 +57,7 @@ python server.py  # or uvicorn server:app --host 0.0.0.0 --port 8000
 ```
 
 ### Running the Frontend
+
 ```bash
 cd afs
 flutter pub get
@@ -60,6 +65,7 @@ flutter run -d macos  # or your preferred device
 ```
 
 ## Developer Notes for Future AI Agents
+
 - **Style Guidelines:** Follow the sleek "Matte Obsidian" aesthetic for UI updates. Use variables from `afs/lib/theme.dart`.
 - **Database:** Ensure async MongoDB approaches are used (`motor`). The backend server uses it via `AsyncIOMotorClient`.
 - **State Management:** Flutter state is currently managed locally using `setState` and standard callbacks. Keep this simple unless a global state manager is explicitly requested.

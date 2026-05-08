@@ -26,10 +26,10 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     ),
     _OnboardPage(
       icon: Icons.center_focus_strong_rounded,
-      tag: 'CENTER STAGE',
+      tag: 'AUTO FRAMING',
       headline: 'Always in the\nperfect shot.',
       body:
-          'Our Center Stage engine calculates zoom and pan continuously so the subject is never lost — even at the edges.',
+          'Our Auto Framing engine calculates zoom and pan continuously so the subject is never lost — even at the edges.',
     ),
     _OnboardPage(
       icon: Icons.tune_rounded,
