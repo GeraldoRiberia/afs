@@ -93,7 +93,7 @@ _syphon_queue: _queue.Queue = _queue.Queue(maxsize=1)   # drop-queue
 _syphon_rgba_buf: np.ndarray | None = None               # reusable RGBA buffer
 _syphon_capture: 'SyphonDirectCapture | None' = None     # direct camera reader
 
-# --- Center Stage State (EMA Smoothing) ---
+# --- EMA Smoothing ---
 current_cx = 0.5
 current_cy = 0.5
 current_scale = 1.0
