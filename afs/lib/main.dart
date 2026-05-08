@@ -110,7 +110,7 @@ class _CameraScreenState extends State<CameraScreen> {
   bool _isConnected = false;
 
 
-  // Zoom/Center Stage state
+  // Zoom state
   Map<String, dynamic>? _latestTrackingResult;
   Timer? _frameTimer;
   bool _isProcessingFrame = false;
@@ -902,7 +902,7 @@ class _CameraScreenState extends State<CameraScreen> {
                       child: Stack(
             fit: StackFit.expand,
             children: [
-              // ── 1. Camera with Center Stage animation ──────────────────
+              // ── 1. Camera with animation ──────────────────
               Positioned(
                 top: 0,
                 left: 0,
