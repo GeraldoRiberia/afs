@@ -1110,3 +1110,77 @@ async def update_audio_settings(
 
 if __name__ == "__main__":
     uvicorn.run("server:app", host="0.0.0.0", port=8000, reload=True)
+
+# At the top, after existing imports
+from av_enrollment import AVEnrollmentOrchestrator
+from av_enrollment.profile_store import VoiceProfileStore
+from av_enrollment.config import AVConfig
+
+# After existing initializations (e.g., after audio_processor)
+# Initialize new components
+profile_store = VoiceProfileStore(users_collection)  # will be set after DB connects
+av_orchestrator = None
+
+# Inside startup_event, after users_collection is set:
+global profile_store, av_orchestrator
+profile_store = VoiceProfileStore(users_collection)
+av_orchestrator = AVEnrollmentOrchestrator(profile_store)
+asyncio.create_task(av_orchestrator.run())
+
+# Add new WebSocket endpoint for enrollment
+@app.websocket("/ws/av_enroll/{face_track_id}")
+async def websocket_av_enroll(websocket: WebSocket, face_track_id: int):
+    """Receive video frames and stereo audio for a specific unregistered face."""
+    await websocket.accept()
+    # Start enrollment session
+    if av_orchestrator is None:
+        await websocket.close(code=1008, reason="Orchestrator not ready")
+        return
+    success = await av_orchestrator.start_enrollment_for_face(face_track_id)
+    if not success:
+        await websocket.send_json({"error": "Face already enrolled or orchestrator busy"})
+        await websocket.close()
+        return
+    
+    try:
+        while True:
+            message = await websocket.receive()
+            if "text" in message:
+                # Commands: pause, resume, cancel
+                pass
+            elif "bytes" in message:
+                # We need to distinguish between video frame and audio chunk.
+                # Use a simple protocol: first 4 bytes = type (0=video, 1=audio_left, 2=audio_right)
+                data = message["bytes"]
+                if len(data) < 4:
+                    continue
+                msg_type = int.from_bytes(data[:4], "little")
+                payload = data[4:]
+                if msg_type == 0:  # video frame (JPEG)
+                    frame = decode_binary_image(payload)
+                    # Here you would also need face detections and landmarks.
+                    # For demonstration, we call the orchestrator with dummy data.
+                    # In reality, you'd run YOLO on the frame.
+                    fake_boxes = [(100,100,200,200)]
+                    fake_landmarks = [np.zeros((68,2))]
+                    await av_orchestrator.process_frame(frame, fake_boxes, fake_landmarks, datetime.now().timestamp())
+                elif msg_type == 1:  # left channel audio (int16 PCM)
+                    left = np.frombuffer(payload, dtype=np.int16).astype(np.float32) / 32768.0
+                    await av_orchestrator.feed_audio(left, np.zeros_like(left))  # right channel missing
+                elif msg_type == 2:  # right channel
+                    right = np.frombuffer(payload, dtype=np.int16).astype(np.float32) / 32768.0
+                    # For simplicity, we assume left was already sent; you need to pair them.
+                    pass
+    except WebSocketDisconnect:
+        logger.info(f"AV enrollment WebSocket disconnected for face {face_track_id}")
+    finally:
+        # Optionally reset orchestrator state
+        pass
+
+# Add a REST endpoint to query enrollment status
+@app.get("/api/av/status/{face_track_id}")
+async def av_status(face_track_id: int):
+    if av_orchestrator is None:
+        raise HTTPException(503, "Enrollment service not ready")
+    # You may store status per face track.
+    return {"status": av_orchestrator.status}
