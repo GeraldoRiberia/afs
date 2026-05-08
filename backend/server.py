@@ -25,6 +25,22 @@ from dotenv import load_dotenv
 from pathlib import Path
 import shutil
 import uuid
+import queue as _queue
+
+# ── Syphon (optional – macOS only, install: pip install syphon-python) ────────
+try:
+    import syphon
+    from syphon.utils.numpy import copy_image_to_mtl_texture
+    from syphon.utils.raw import create_mtl_texture
+    _SYPHON_AVAILABLE = True
+    logger_init = logging.getLogger(__name__)
+    logger_init.info("syphon-python loaded successfully.")
+except ImportError:
+    _SYPHON_AVAILABLE = False
+    logging.getLogger(__name__).warning(
+        "syphon-python not found. Run: pip install syphon-python\n"
+        "Syphon virtual camera will be unavailable."
+    )
 
 from services.single_tracker import SingleTracker
 from services.multi_tracker import MultiTracker
@@ -49,6 +65,34 @@ is_recording = False
 video_writer = None
 recording_filename = ""
 
+# --- Syphon Virtual Camera State ------------------------------------------
+# HIGH-LEVEL PIPELINE (after this fix):
+#
+#   cv2.VideoCapture (30 fps) ─────────────────────────────────────────────┐
+#          ↓                                                               │
+#   _apply_current_crop()   ← current_cx/cy/scale (EMA, updated by YOLO)  │
+#          ↓                                                               │
+#   _syphon_enqueue()  →  _syphon_worker (Metal thread)  →  Syphon Metal  │
+#          ↓                                                               │
+#   OBS Syphon/Spout2 Client  →  OBS Virtual Camera  →  Google Meet etc.  │
+#                                                                          │
+#   WebSocket frames (Flutter)  →  YOLO inference  →  update EMA state ───┘
+#                                                    →  send JSON to Flutter
+#
+# The Syphon output runs at TRUE 30 fps (camera framerate).
+# YOLO inference runs at the WebSocket rate (~5-15 fps) and just keeps the
+# EMA crop coordinates up-to-date. Video content is never stale because
+# it comes directly from the camera, not from WebSocket frames.
+_SYPHON_OUTPUT_W = 1280
+_SYPHON_OUTPUT_H = 720
+is_syphon_active = False
+_syphon_server = None        # syphon.SyphonMetalServer instance
+_syphon_texture = None       # pre-allocated MTLTexture
+_syphon_lock = threading.Lock()
+_syphon_queue: _queue.Queue = _queue.Queue(maxsize=1)   # drop-queue
+_syphon_rgba_buf: np.ndarray | None = None               # reusable RGBA buffer
+_syphon_capture: 'SyphonDirectCapture | None' = None     # direct camera reader
+
 # --- Center Stage State (EMA Smoothing) ---
 current_cx = 0.5
 current_cy = 0.5
@@ -63,6 +107,11 @@ current_target_distance = None
 # Lower is smoother but slower (similar to Dart's TweenAnimation)
 SMOOTHING_FACTOR = 0.1
 TARGET_ASPECT_RATIO = 16.0 / 9.0  # Assuming output is meant to be 16:9
+
+# Syphon-side smoothing applied at 30 fps — independent of the YOLO EMA.
+# 0.08 at 30 fps matches Flutter's TweenAnimationBuilder(duration: 1500ms,
+# curve: Curves.fastOutSlowIn) in perceived snap speed.
+_SYPHON_SMOOTH = 0.08
 
 app = FastAPI(title="AFS Tracking Backend")
 
@@ -320,6 +369,120 @@ def apply_center_stage_crop(frame, tracking_data):
     return cropped
 
 
+def _apply_crop_at_state(
+    frame: np.ndarray, cx: float, cy: float, scale: float
+) -> np.ndarray:
+    """Crop *frame* using the given (cx, cy, scale) values.
+    Resolution-independent: cx/cy are 0-1 normalised, scale is the zoom factor."""
+    h, w = frame.shape[:2]
+    scale = max(scale, 1.0)
+    crop_w = int(w / scale)
+    crop_h = int(h / scale)
+
+    # Enforce 16:9
+    ar = crop_w / max(1, crop_h)
+    if ar > TARGET_ASPECT_RATIO:
+        crop_w = int(crop_h * TARGET_ASPECT_RATIO)
+    else:
+        crop_h = int(crop_w / TARGET_ASPECT_RATIO)
+
+    # Clamp so we never go out-of-bounds
+    crop_w = min(crop_w, w)
+    crop_h = min(crop_h, h)
+
+    center_px_x = int(cx * w)
+    center_px_y = int(cy * h)
+
+    start_x = max(0, center_px_x - crop_w // 2)
+    start_y = max(0, center_px_y - crop_h // 2)
+    if start_x + crop_w > w:
+        start_x = w - crop_w
+    if start_y + crop_h > h:
+        start_y = h - crop_h
+
+    return frame[start_y:start_y + crop_h, start_x:start_x + crop_w]
+
+
+def _apply_current_crop(frame: np.ndarray) -> np.ndarray:
+    """Convenience wrapper: crop using the live YOLO EMA globals.
+    Used when no per-consumer smooth state is available."""
+    return _apply_crop_at_state(frame, current_cx, current_cy, current_scale)
+
+
+class SyphonDirectCapture:
+    """Opens the system camera directly with cv2.VideoCapture and feeds
+    the Syphon publisher at 30 fps, independent of the WebSocket pipeline.
+
+    Two-layer smoothing:
+      Layer 1 — YOLO EMA (global current_cx/cy/scale): updates at YOLO rate.
+      Layer 2 — Syphon EMA (self._cx/cy/scale): interpolates toward layer-1
+                at 30 fps with _SYPHON_SMOOTH, matching the feel of Flutter's
+                TweenAnimationBuilder(duration: 1500ms, Curves.fastOutSlowIn).
+    """
+
+    def __init__(self, camera_idx: int = 0):
+        self.camera_idx = camera_idx
+        self._cap: cv2.VideoCapture | None = None
+        self._stop_evt = threading.Event()
+        self._thread: threading.Thread | None = None
+        # Per-instance smooth interpolation state (initialised to centre/no-zoom)
+        self._cx: float = 0.5
+        self._cy: float = 0.5
+        self._scale: float = 1.0
+
+    def start(self) -> bool:
+        self._stop_evt.clear()
+        cap = cv2.VideoCapture(self.camera_idx)
+        if not cap.isOpened():
+            logger.error(f"SyphonDirectCapture: cannot open camera {self.camera_idx}")
+            return False
+        # Request 30 fps at 1280x720; the driver may round to the nearest mode
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, _SYPHON_OUTPUT_W)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, _SYPHON_OUTPUT_H)
+        cap.set(cv2.CAP_PROP_FPS, 30)
+        self._cap = cap
+        self._thread = threading.Thread(
+            target=self._loop, name="syphon-capture", daemon=True
+        )
+        self._thread.start()
+        logger.info(
+            f"SyphonDirectCapture started on camera {self.camera_idx} "
+            f"({int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))}×"
+            f"{int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))} "
+            f"@ {int(cap.get(cv2.CAP_PROP_FPS))} fps)"
+        )
+        return True
+
+    def stop(self):
+        self._stop_evt.set()
+        if self._cap is not None:
+            self._cap.release()
+            self._cap = None
+        logger.info("SyphonDirectCapture stopped.")
+
+    def _loop(self):
+        cap = self._cap
+        if cap is None:
+            return
+        while not self._stop_evt.is_set():
+            ret, frame = cap.read()
+            if not ret:
+                # Camera glitch — short sleep and retry
+                self._stop_evt.wait(0.01)
+                continue
+
+            # ── Layer-2 EMA: smooth Syphon state toward YOLO target at 30fps ──
+            # Reading current_cx/cy/scale is GIL-safe (plain Python floats).
+            self._cx    += (current_cx    - self._cx)    * _SYPHON_SMOOTH
+            self._cy    += (current_cy    - self._cy)    * _SYPHON_SMOOTH
+            self._scale += (current_scale - self._scale) * _SYPHON_SMOOTH
+
+            # Crop using the Syphon-side state (smooth at 30fps)
+            cropped = _apply_crop_at_state(frame, self._cx, self._cy, self._scale)
+            # Enqueue to Syphon publisher (non-blocking, drops stale frame)
+            _syphon_enqueue(cropped)
+
+
 async def generate_obs_stream():
     """Generator for the MJPEG stream used by OBS."""
     global latest_obs_frame
@@ -342,16 +505,122 @@ async def obs_feed():
     return StreamingResponse(generate_obs_stream(), media_type="multipart/x-mixed-replace; boundary=frame")
 
 
-async def vcam_generator_loop():
-    """Background task to push frames to the virtual camera at 30fps."""
-    global is_obs_active, vcam, latest_vcam_frame
+def _syphon_init(camera_idx: int = 0):
+    """Create the Syphon Metal server, pre-allocate the texture, and start
+    the direct-capture thread that feeds it at 30 fps."""
+    global _syphon_server, _syphon_texture, _syphon_rgba_buf, _syphon_capture
+    if not _SYPHON_AVAILABLE:
+        logger.warning("Cannot start Syphon: syphon-python not installed.")
+        return False
+    try:
+        with _syphon_lock:
+            if _syphon_server is None:
+                # SYPHON: Server name shown inside OBS → Syphon/Spout2 Capture
+                _syphon_server = syphon.SyphonMetalServer("AFS AutoFrame")
+                _syphon_texture = create_mtl_texture(
+                    _syphon_server.device, _SYPHON_OUTPUT_W, _SYPHON_OUTPUT_H
+                )
+                # Pre-allocate a reusable RGBA buffer to avoid per-frame malloc
+                _syphon_rgba_buf = np.zeros(
+                    (_SYPHON_OUTPUT_H, _SYPHON_OUTPUT_W, 4), dtype=np.uint8
+                )
+                logger.info(
+                    f"Syphon server 'AFS AutoFrame' started "
+                    f"({_SYPHON_OUTPUT_W}×{_SYPHON_OUTPUT_H})."
+                )
+        # Start the direct camera capture (independent of WebSocket frames)
+        if _syphon_capture is None or not _syphon_capture._thread or \
+                not _syphon_capture._thread.is_alive():
+            capture = SyphonDirectCapture(camera_idx=camera_idx)
+            if not capture.start():
+                return False
+            _syphon_capture = capture
+        return True
+    except Exception as e:
+        logger.error(f"Syphon init failed: {e}")
+        return False
+
+
+def _syphon_stop():
+    """Gracefully stop the Syphon server and direct-capture thread."""
+    global _syphon_server, _syphon_texture, _syphon_rgba_buf, _syphon_capture, is_syphon_active
+    # Stop direct camera capture first so no more frames are enqueued
+    if _syphon_capture is not None:
+        _syphon_capture.stop()
+        _syphon_capture = None
+    with _syphon_lock:
+        is_syphon_active = False
+        if _syphon_server is not None:
+            try:
+                _syphon_server.stop()
+            except Exception:
+                pass
+            _syphon_server = None
+            _syphon_texture = None
+            _syphon_rgba_buf = None
+            logger.info("Syphon server stopped.")
+
+
+def _syphon_enqueue(frame_bgr: np.ndarray):
+    """Drop-in replacement for the old _syphon_publish.
+    Puts the frame into the single-slot drop-queue (non-blocking).
+    If the queue already has a pending frame, that stale frame is discarded
+    and replaced with the newest one so the Syphon thread always has the
+    latest image without ever stalling the caller."""
+    try:
+        _syphon_queue.put_nowait(frame_bgr)
+    except _queue.Full:
+        try:
+            _syphon_queue.get_nowait()          # drain the stale frame
+        except _queue.Empty:
+            pass
+        try:
+            _syphon_queue.put_nowait(frame_bgr) # replace with newest
+        except _queue.Full:
+            pass
+
+
+def _syphon_worker():
+    """Dedicated daemon thread that owns all Metal/Syphon API calls.
+    Runs forever; wakes up only when a new frame arrives in the queue.
+    Completely decoupled from the YOLO inference thread."""
+    global _syphon_rgba_buf
+    logger.info("Syphon worker thread started.")
     while True:
         try:
-            if is_obs_active and vcam is not None and latest_vcam_frame is not None:
-                vcam.send(latest_vcam_frame)
+            frame_bgr = _syphon_queue.get(timeout=1.0)  # block until frame
+        except _queue.Empty:
+            continue
+
+        with _syphon_lock:
+            srv = _syphon_server
+            tex = _syphon_texture
+            buf = _syphon_rgba_buf
+
+        if srv is None or tex is None or buf is None:
+            continue
+
+        try:
+            h, w = frame_bgr.shape[:2]
+            if w != _SYPHON_OUTPUT_W or h != _SYPHON_OUTPUT_H:
+                frame_bgr = cv2.resize(
+                    frame_bgr, (_SYPHON_OUTPUT_W, _SYPHON_OUTPUT_H),
+                    interpolation=cv2.INTER_LINEAR
+                )
+            # Convert BGR → RGBA in-place into pre-allocated buffer
+            cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGBA, dst=buf)
+            copy_image_to_mtl_texture(buf, tex)
+            srv.publish_frame_texture(tex)
         except Exception as e:
-            logger.error(f"vcam loop error: {e}")
-        await asyncio.sleep(1/30)
+            logger.error(f"Syphon worker publish error: {e}")
+
+
+# Start the Syphon worker daemon thread immediately (it sleeps until
+# the server is initialised and frames start arriving).
+_syphon_thread = threading.Thread(
+    target=_syphon_worker, name="syphon-publisher", daemon=True
+)
+_syphon_thread.start()
 
 
 @app.get("/")
@@ -429,13 +698,14 @@ async def startup_event():
         audio_settings_collection = None
         audio_angles_collection = None
 
-    asyncio.create_task(vcam_generator_loop())
     asyncio.create_task(mongodb_reconnect_loop())
 
 
 @app.on_event("shutdown")
 async def shutdown_event():
     global mongo_client
+    # Gracefully stop the Syphon Metal server
+    _syphon_stop()
     if mongo_client is not None:
         mongo_client.close()
         logger.info("MongoDB connection closed.")
@@ -548,7 +818,7 @@ async def enroll_face(
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
-    global is_recording, video_writer, recording_filename, latest_obs_frame, is_obs_active, zoom_multiplier
+    global is_recording, video_writer, recording_filename, latest_obs_frame, is_obs_active, is_syphon_active, zoom_multiplier
 
     await websocket.accept()
     logger.info("New WebSocket connection established.")
@@ -612,6 +882,31 @@ async def websocket_endpoint(websocket: WebSocket):
                                 is_obs_active = False
                                 logger.info("Stopped OBS MJPEG stream")
                                 await websocket.send_json({"type": "obs_ack", "status": "stopped"})
+                        elif command == "start_syphon":
+                            # Accept optional camera index (default 0)
+                            camera_idx = int(payload.get("camera_idx", 0))
+                            if not is_syphon_active:
+                                ok = await asyncio.get_event_loop().run_in_executor(
+                                    executor, _syphon_init, camera_idx
+                                )
+                                if ok:
+                                    is_syphon_active = True
+                                    logger.info(f"Syphon virtual camera started (camera {camera_idx}).")
+                                    await websocket.send_json({"type": "syphon_ack", "status": "started"})
+                                else:
+                                    await websocket.send_json({
+                                        "type": "syphon_ack",
+                                        "status": "error",
+                                        "message": "syphon-python not installed, Metal unavailable, or camera could not be opened."
+                                    })
+                        elif command == "stop_syphon":
+                            if is_syphon_active:
+                                await asyncio.get_event_loop().run_in_executor(
+                                    executor, _syphon_stop
+                                )
+                                # is_syphon_active is set to False inside _syphon_stop()
+                                logger.info("Syphon virtual camera stopped.")
+                                await websocket.send_json({"type": "syphon_ack", "status": "stopped"})
                 except json.JSONDecodeError:
                     logger.error("Invalid JSON received.")
                 continue
@@ -652,14 +947,19 @@ async def websocket_endpoint(websocket: WebSocket):
                     cropped_frame = apply_center_stage_crop(
                         frame, response_data)
 
-                    # 1. Update OBS Feed
+                    # 1. Update OBS MJPEG Feed
                     if is_obs_active:
                         ret, buffer = cv2.imencode('.jpg', cropped_frame)
                         if ret:
                             with obs_frame_lock:
                                 latest_obs_frame = buffer.tobytes()
 
-                    # 2. Update Recording Output
+                    # 2. WebSocket frames no longer drive the Syphon feed.
+                    # The SyphonDirectCapture thread reads the camera at 30 fps
+                    # and applies the EMA crop state independently.
+                    # (is_syphon_active kept for future per-frame annotations)
+
+                    # 3. Update Recording Output
                     if is_recording:
                         h, w = cropped_frame.shape[:2]
                         if video_writer is None:
@@ -687,6 +987,10 @@ async def websocket_endpoint(websocket: WebSocket):
         logger.error(f"WebSocket error: {e}")
     finally:
         is_obs_active = False
+        # SYPHON: keep server alive across reconnects so OBS doesn't lose the
+        # source. Only stop it on server shutdown (shutdown_event above).
+        # Just flip the flag so no more frames are published.
+        is_syphon_active = False
 
         # Cleanup Recording
         if video_writer is not None:
