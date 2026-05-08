@@ -163,6 +163,9 @@ class _CameraScreenState extends State<CameraScreen> {
   String _enrollmentInstruction = '';
   bool _isEnrollmentProcessing = false;
 
+  // ── Syphon Virtual Camera ──────────────────────────────────────────────────
+  bool _isSyphonActive = false;
+
 
   @override
   void initState() {
@@ -201,6 +204,11 @@ class _CameraScreenState extends State<CameraScreen> {
           final data = jsonDecode(message);
           if (mounted) {
             setState(() {
+              // Handle Syphon acknowledgements
+              if (data['type'] == 'syphon_ack') {
+                _isSyphonActive = data['status'] == 'started';
+                return;
+              }
               _isWaitingForServer = false;
               _latestTrackingResult = data;
               _updateAutoFraming(data);
@@ -278,6 +286,20 @@ class _CameraScreenState extends State<CameraScreen> {
     }
   }
 
+  // ── Syphon Virtual Camera Toggle ───────────────────────────────────────────
+  void _toggleSyphon() {
+    if (!_isConnected || _channel == null) return;
+    if (_isSyphonActive) {
+      _channel!.sink.add(jsonEncode({'command': 'stop_syphon'}));
+    } else {
+      // camera_idx: 0 = default system camera (same as cv2.VideoCapture(0)).
+      // macOS typically assigns the built-in camera as 0, external USB as 1+.
+      _channel!.sink.add(jsonEncode({'command': 'start_syphon', 'camera_idx': 0}));
+    }
+    // Optimistically update state; the syphon_ack will confirm/correct it.
+    setState(() => _isSyphonActive = !_isSyphonActive);
+  }
+
   void _updateAutoFraming(Map<String, dynamic> data) {
     if (_isEnrolling) {
       _targetScale = 1.0;
@@ -334,7 +356,7 @@ class _CameraScreenState extends State<CameraScreen> {
   void _startFrameLoop() {
     _frameTimer?.cancel();
     _frameTimer =
-        Timer.periodic(const Duration(milliseconds: 500), (timer) async {
+        Timer.periodic(const Duration(milliseconds: 50), (timer) async {
       if (_lastSentTime != null &&
           DateTime.now().difference(_lastSentTime!).inSeconds > 2) {
         _isWaitingForServer = false;
@@ -1054,6 +1076,8 @@ class _CameraScreenState extends State<CameraScreen> {
                       setState(() => _showBoundingBoxes = v),
                   isRecording: _isRecording,
                   onRecordToggle: _toggleRecording,
+                  isSyphonActive: _isSyphonActive,
+                  onSyphonToggle: (_) => _toggleSyphon(),
                 ),
               ),
             ],

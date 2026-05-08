@@ -13,6 +13,10 @@ class AfsControlsBar extends StatelessWidget {
   final bool isRecording;
   final VoidCallback onRecordToggle;
 
+  // Syphon virtual camera
+  final bool isSyphonActive;
+  final ValueChanged<bool> onSyphonToggle;
+
   const AfsControlsBar({
     super.key,
     required this.modeSelector,
@@ -20,6 +24,8 @@ class AfsControlsBar extends StatelessWidget {
     required this.onBoundingBoxToggle,
     required this.isRecording,
     required this.onRecordToggle,
+    required this.isSyphonActive,
+    required this.onSyphonToggle,
   });
 
   @override
@@ -69,6 +75,17 @@ class AfsControlsBar extends StatelessWidget {
                 label: 'BBOX',
                 value: showBoundingBoxes,
                 onChanged: onBoundingBoxToggle,
+              ),
+
+              const SizedBox(width: 8),
+
+              // Syphon virtual camera toggle
+              _GlassToggle(
+                icon: Icons.cast_rounded,
+                label: 'SYPHON',
+                value: isSyphonActive,
+                activeColor: const Color(0xFF7C6AF7), // purple accent for Syphon
+                onChanged: onSyphonToggle,
               ),
 
               const SizedBox(width: 12),
@@ -191,16 +208,19 @@ class _GlassToggle extends StatelessWidget {
   final String label;
   final bool value;
   final ValueChanged<bool> onChanged;
+  final Color? activeColor; // override accent; defaults to AfsTheme.neonGreen
 
   const _GlassToggle({
     required this.icon,
     required this.label,
     required this.value,
     required this.onChanged,
+    this.activeColor,
   });
 
   @override
   Widget build(BuildContext context) {
+    final Color accent = activeColor ?? AfsTheme.neonGreen;
     return GestureDetector(
       onTap: () => onChanged(!value),
       child: AnimatedContainer(
@@ -208,12 +228,12 @@ class _GlassToggle extends StatelessWidget {
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
         decoration: BoxDecoration(
           color: value
-              ? AfsTheme.neonGreen.withValues(alpha: 0.12)
+              ? accent.withValues(alpha: 0.12)
               : AfsTheme.surfaceHigh,
           borderRadius: BorderRadius.circular(999),
           border: Border.all(
             color: value
-                ? AfsTheme.neonGreen.withValues(alpha: 0.35)
+                ? accent.withValues(alpha: 0.35)
                 : AfsTheme.outlineGhost,
           ),
         ),
@@ -223,13 +243,13 @@ class _GlassToggle extends StatelessWidget {
             Icon(
               icon,
               size: 15,
-              color: value ? AfsTheme.neonGreen : AfsTheme.ashGray.withValues(alpha: 0.6),
+              color: value ? accent : AfsTheme.ashGray.withValues(alpha: 0.6),
             ),
             const SizedBox(width: 6),
             Text(
               label,
               style: AfsTheme.labelSmall(
-                value ? AfsTheme.neonGreen : AfsTheme.ashGray.withValues(alpha: 0.6),
+                value ? accent : AfsTheme.ashGray.withValues(alpha: 0.6),
               ),
             ),
           ],
