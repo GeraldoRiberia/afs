@@ -1,4 +1,5 @@
 import socket
+import serial
 import numpy as np
 import torch
 import torchaudio.functional as F
@@ -61,6 +62,7 @@ def process_audio(stereo_audio, sample_rate=16000, mic_dist_meters=0.2):
 # -------------------------------
 _result_dict_global = None
 _result_lock_global = None
+_serial_conn_global = None
 
 def set_global_result_dict(result_dict, lock):
     """Call this once from the FastAPI startup event to provide the shared state."""
@@ -68,13 +70,18 @@ def set_global_result_dict(result_dict, lock):
     _result_dict_global = result_dict
     _result_lock_global = lock
 
+def set_serial_connection(ser):
+    """Call this once to set the global serial connection."""
+    global _serial_conn_global
+    _serial_conn_global = ser
+
 # -------------------------------
-# 📤 SEND DETECTION TO ESP32 (via UDP)
+# 📤 SEND DETECTION TO ESP32 (via Serial)
 # -------------------------------
-def send_to_edge_device(esp32_ip="0.0.0.0", esp32_port=12345):
+def send_to_edge_device():
     """Send the latest detection (label + angle) to the ESP32."""
-    if _result_dict_global is None or _result_lock_global is None:
-        print("Result dict not set. Call set_global_result_dict first.")
+    if _result_dict_global is None or _result_lock_global is None or _serial_conn_global is None:
+        print("Result dict or serial connection not set.")
         return False
 
     with _result_lock_global:
@@ -83,31 +90,30 @@ def send_to_edge_device(esp32_ip="0.0.0.0", esp32_port=12345):
         if label is None or angle is None:
             return False
 
-    message = f"{label},{angle:.1f}"
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    message = f"{label},{angle:.1f}\n"
     try:
-        sock.sendto(message.encode(), (esp32_ip, esp32_port))
-        print(f"Sent to ESP32: {message}")
+        _serial_conn_global.write(message.encode())
+        print(f"Sent to ESP32: {message.strip()}")
         return True
     except Exception as e:
         print(f"Failed to send: {e}")
         return False
-    finally:
-        sock.close()
 
 # -------------------------------
 # 🎧 AUDIO LISTENER (runs in background thread)
 # -------------------------------
 def start_audio_listener(result_dict, lock):
     """
-    Continuously receive UDP audio from ESP32, process, and update result_dict.
+    Continuously receive serial audio from ESP32, process, and update result_dict.
     Uses the provided lock for thread‑safe updates.
     """
-    UDP_IP = "0.0.0.0"
-    UDP_PORT = 12345
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.bind((UDP_IP, UDP_PORT))
-    print("Listening for ESP32 audio on UDP port 12345...")
+    ESP32_SERIAL_PORT = "/dev/cu.usbmodem206EF1327F0C2"
+    BAUD_RATE = 115200  # Adjust if needed
+    ser = serial.Serial(ESP32_SERIAL_PORT, BAUD_RATE, timeout=1)
+    print(f"Listening for ESP32 audio on serial port {ESP32_SERIAL_PORT}...")
+
+    # Set the global serial connection for sending
+    set_serial_connection(ser)
 
     buffer_L = []
     buffer_R = []
@@ -117,7 +123,8 @@ def start_audio_listener(result_dict, lock):
 
     try:
         while True:
-            data, _ = sock.recvfrom(4096)
+            # Read a chunk of data (adjust size as needed)
+            data = ser.read(4096)  # Read up to 4096 bytes
             if not data:
                 continue
 
@@ -163,4 +170,4 @@ def start_audio_listener(result_dict, lock):
     except KeyboardInterrupt:
         print("\nAudio listener stopped.")
     finally:
-        sock.close()
+        ser.close()

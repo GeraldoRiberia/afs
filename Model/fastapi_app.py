@@ -33,8 +33,8 @@ async def get_latest():
         )
 
 @app.post("/send_to_esp32")
-async def send_now(esp32_ip: str = "0.0.0.0", esp32_port: int = 12345):
-    if send_to_edge_device(esp32_ip, esp32_port):   # <-- pass ip/port only now
+async def send_now():
+    if send_to_edge_device():   # No more ip/port needed
         return {"status": "sent", "data": latest_result}
     return {'status': 'none', 'data': ''}
 
