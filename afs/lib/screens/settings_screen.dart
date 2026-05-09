@@ -4,6 +4,7 @@ import 'package:camera_macos/camera_macos.dart';
 import 'package:camera/camera.dart';
 import '../theme.dart';
 import 'login_screen.dart';
+import '../services/auth_service.dart';
 import '../services/config.dart';
 
 class SettingsScreen extends StatefulWidget {
@@ -32,6 +33,7 @@ class SettingsScreen extends StatefulWidget {
 class _SettingsScreenState extends State<SettingsScreen> {
   final _backendCtrl =
       TextEditingController(text: BackendConfig.wsUrl);
+  String? _operatorName;
 
   late dynamic _localSelectedDevice;
   late dynamic _localSelectedAudio;
@@ -44,6 +46,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
     super.initState();
     _localSelectedDevice = widget.selectedDevice;
     _localSelectedAudio = widget.selectedAudioDevice;
+    _loadOperatorName();
+  }
+
+  Future<void> _loadOperatorName() async {
+    final name = await AuthService.instance.getCurrentUserName();
+    if (!mounted) return;
+    setState(() => _operatorName = name);
   }
 
   @override
@@ -131,12 +140,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             size: 24, color: AfsTheme.neonGreen),
                       ),
                       const SizedBox(width: 16),
-                      Column(
+                          Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Text('OPERATOR_01',
-                              style:
-                                  AfsTheme.headlineLarge(AfsTheme.ashGray)),
+                          Text(
+                            _operatorName ?? 'OPERATOR_01',
+                            style: AfsTheme.headlineLarge(AfsTheme.ashGray),
+                          ),
                           Text('SYSTEM_ACTIVE',
                               style:
                                   AfsTheme.monoSmall(AfsTheme.mintGreen)),

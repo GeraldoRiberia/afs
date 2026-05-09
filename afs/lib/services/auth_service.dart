@@ -20,12 +20,18 @@ class AuthService {
 
   static final AuthService instance = AuthService._();
   final String _tokenFileName = 'afs_jwt_token.txt';
+  final String _userFileName = 'afs_user_info.json';
 
   String get _baseUrl => BackendConfig.baseUrl;
 
   Future<File> get _tokenFile async {
     final directory = await getApplicationDocumentsDirectory();
     return File('${directory.path}/$_tokenFileName');
+  }
+
+  Future<File> get _userFile async {
+    final directory = await getApplicationDocumentsDirectory();
+    return File('${directory.path}/$_userFileName');
   }
 
   Future<void> register({
@@ -66,15 +72,6 @@ class AuthService {
     await _saveTokenFromResponse(response);
   }
 
-  Future<void> logout() async {
-    try {
-      final file = await _tokenFile;
-      if (await file.exists()) {
-        await file.delete();
-      }
-    } catch (_) {}
-  }
-
   Future<String?> getToken() async {
     try {
       final file = await _tokenFile;
@@ -83,6 +80,34 @@ class AuthService {
       }
     } catch (_) {}
     return null;
+  }
+
+  Future<String?> getCurrentUserName() async {
+    try {
+      final file = await _userFile;
+      if (!await file.exists()) return null;
+      final contents = await file.readAsString();
+      final data = jsonDecode(contents);
+      if (data is Map<String, dynamic>) {
+        return data['full_name'] as String?;
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  Future<void> logout() async {
+    try {
+      final file = await _tokenFile;
+      if (await file.exists()) {
+        await file.delete();
+      }
+    } catch (_) {}
+    try {
+      final userFile = await _userFile;
+      if (await userFile.exists()) {
+        await userFile.delete();
+      }
+    } catch (_) {}
   }
 
   Future<void> enrollFace(String videoPath) async {
@@ -112,8 +137,20 @@ class AuthService {
         final file = await _tokenFile;
         await file.writeAsString(body['token'] as String);
       }
+      if (body is Map<String, dynamic> && body['user'] is Map<String, dynamic>) {
+        await _saveUserInfo(body['user'] as Map<String, dynamic>);
+      }
     } catch (_) {
-      // Ignore if token is not found or parsing fails
+      // Ignore if token or user info is not found or parsing fails
+    }
+  }
+
+  Future<void> _saveUserInfo(Map<String, dynamic> user) async {
+    try {
+      final file = await _userFile;
+      await file.writeAsString(jsonEncode(user));
+    } catch (_) {
+      // Ignore write failures
     }
   }
 
