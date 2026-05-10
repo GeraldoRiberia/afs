@@ -31,7 +31,9 @@ Future<Uint8List?> _processImageInIsolate(Map<String, dynamic> params) async {
     final bytes = params['bytes'] as Uint8List;
     img.Image? decodedImage = img.decodeImage(bytes);
     if (decodedImage != null) {
-      List<int> jpgBytes = img.encodeJpg(decodedImage, quality: 85);
+      // Flip horizontally to correct mirroring for front-facing cameras
+      img.Image flippedImage = img.flipHorizontal(decodedImage);
+      List<int> jpgBytes = img.encodeJpg(flippedImage, quality: 85);
       return Uint8List.fromList(jpgBytes);
     }
     return bytes;

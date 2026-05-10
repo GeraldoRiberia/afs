@@ -104,14 +104,13 @@ current_target_angle = None
 current_target_distance = None
 
 # Configurable parameters for smooth panning
-# Lower is smoother but slower (similar to Dart's TweenAnimation)
-SMOOTHING_FACTOR = 0.1
+# Lower is smoother but slower; slightly higher makes the Syphon crop more responsive.
+SMOOTHING_FACTOR = 0.16
 TARGET_ASPECT_RATIO = 16.0 / 9.0  # Assuming output is meant to be 16:9
 
 # Syphon-side smoothing applied at 30 fps — independent of the YOLO EMA.
-# 0.08 at 30 fps matches Flutter's TweenAnimationBuilder(duration: 1500ms,
-# curve: Curves.fastOutSlowIn) in perceived snap speed.
-_SYPHON_SMOOTH = 0.08
+# 0.14 at 30 fps gives a faster yet still smooth camera crop transition.
+_SYPHON_SMOOTH = 0.14
 
 app = FastAPI(title="AFS Tracking Backend")
 
