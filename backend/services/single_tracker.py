@@ -34,7 +34,8 @@ class SingleTracker:
         self.similarity_threshold = 0.70
         
         self.main_user_embeddings = []
-        self._load_embeddings()
+        # User-specific embeddings are supplied by the websocket auth flow.
+        # Do not use the local generic cache for strict single-user tracking.
         
         try:
             self.model = YOLO(self.detector_model_path)
@@ -83,7 +84,8 @@ class SingleTracker:
             "priority_id": self.priority_track_id,
             "error": None,
             "frame_width": int(frame.shape[1]),
-            "frame_height": int(frame.shape[0])
+            "frame_height": int(frame.shape[0]),
+            "single_status": "NO EMBEDDINGS",
         }
         
         if self.model is None:
@@ -132,8 +134,7 @@ class SingleTracker:
                             pitch = (n_eye - n_mouth) / (n_eye + n_mouth + 1e-6)
                             
                     # Lock resolution logic
-                    
-                    embeddings_to_check = custom_embeddings if custom_embeddings is not None and len(custom_embeddings) > 0 else self.main_user_embeddings
+                    embeddings_to_check = custom_embeddings if custom_embeddings is not None and len(custom_embeddings) > 0 else []
                     
                     if track_id not in self.known_tracks and len(embeddings_to_check) > 0:
                         if track_id not in self.track_retries:
@@ -143,10 +144,8 @@ class SingleTracker:
                         face_crop = frame[y1:y2, x1:x2]
                         
                         try:
-                            # Strict check
+                            # Strict check against the current user's embeddings only
                             current_face = DeepFace.represent(face_crop, model_name=self.model_name, enforce_detection=False)[0]["embedding"]
-                            
-                            embeddings_to_check = custom_embeddings if custom_embeddings is not None and len(custom_embeddings) > 0 else self.main_user_embeddings
                             
                             for user_embedding in embeddings_to_check:
                                 sim = np.dot(user_embedding, current_face) / (np.linalg.norm(user_embedding) * np.linalg.norm(current_face))
@@ -210,5 +209,17 @@ class SingleTracker:
         except Exception as e:
             logger.error(f"Error during SingleTrack: {e}")
             results_data["error"] = str(e)
+
+        # Publish strict single-mode state for the frontend HUD.
+        embeddings_available = custom_embeddings is not None and len(custom_embeddings) > 0
+        if embeddings_available:
+            if any(box.get("is_target", False) for box in results_data["boxes"]):
+                results_data["single_status"] = "LOCKED"
+            elif len(results_data["boxes"]) > 0:
+                results_data["single_status"] = "SEARCHING"
+            else:
+                results_data["single_status"] = "NO FACE"
+        else:
+            results_data["single_status"] = "NO EMBEDDINGS"
 
         return results_data

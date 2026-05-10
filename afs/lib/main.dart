@@ -315,7 +315,7 @@ class _CameraScreenState extends State<CameraScreen> {
       if (_currentMode == TrackingMode.single && data['boxes'] != null) {
         final boxes = data['boxes'] as List;
         for (var b in boxes) {
-          if (b['is_target'] == true || boxes.length == 1) {
+          if (b['is_target'] == true) {
             targetRect = Rect.fromLTRB(b['x1'].toDouble(), b['y1'].toDouble(),
                 b['x2'].toDouble(), b['y2'].toDouble());
             break;
@@ -1028,6 +1028,9 @@ class _CameraScreenState extends State<CameraScreen> {
                         fps: _currentFps,
                         mode: _currentMode,
                         hasTarget: _targetScale > 1.05,
+                        singleStatus: _latestTrackingResult != null
+                            ? (_latestTrackingResult!['single_status'] as String? ?? '—')
+                            : '—',
                         userZoomSliderValue: _userZoomSliderValue,
                         soundDirection: _soundDirectionIndicator,
                         soundLabel: _soundLabel,
@@ -1353,6 +1356,7 @@ class _HudSidebar extends StatelessWidget {
   final double fps;
   final TrackingMode mode;
   final bool hasTarget;
+  final String singleStatus;
   final double userZoomSliderValue;
   final String soundDirection;
   final String? soundLabel;
@@ -1368,6 +1372,7 @@ class _HudSidebar extends StatelessWidget {
     required this.fps,
     required this.mode,
     required this.hasTarget,
+    required this.singleStatus,
     required this.userZoomSliderValue,
     required this.soundDirection,
     this.soundLabel,
@@ -1413,6 +1418,18 @@ class _HudSidebar extends StatelessWidget {
                 icon: Icons.track_changes_rounded,
                 valueColor: detectedCount > 0
                     ? AfsTheme.neonGreen
+                    : AfsTheme.ashGray.withValues(alpha: 0.4),
+              ),
+              const SizedBox(height: 10),
+
+              HudStatTile(
+                label: 'SINGLE STATUS',
+                value: singleStatus,
+                icon: Icons.face_retouching_natural,
+                valueColor: mode == TrackingMode.single
+                    ? (singleStatus == 'LOCKED'
+                        ? AfsTheme.neonGreen
+                        : AfsTheme.warningColor)
                     : AfsTheme.ashGray.withValues(alpha: 0.4),
               ),
               const SizedBox(height: 10),
