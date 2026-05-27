@@ -105,12 +105,12 @@ current_target_distance = None
 
 # Configurable parameters for smooth panning
 # Lower is smoother but slower; slightly higher makes the Syphon crop more responsive.
-SMOOTHING_FACTOR = 0.16
+SMOOTHING_FACTOR = 0.90
 TARGET_ASPECT_RATIO = 16.0 / 9.0  # Assuming output is meant to be 16:9
 
 # Syphon-side smoothing applied at 30 fps — independent of the YOLO EMA.
 # 0.14 at 30 fps gives a faster yet still smooth camera crop transition.
-_SYPHON_SMOOTH = 0.14
+_SYPHON_SMOOTH = 0.08
 
 app = FastAPI(title="AFS Tracking Backend")
 

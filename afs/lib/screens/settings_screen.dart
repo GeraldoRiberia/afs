@@ -16,6 +16,11 @@ class SettingsScreen extends StatefulWidget {
   final dynamic selectedAudioDevice;
   final ValueChanged<dynamic>? onAudioDeviceSelected;
 
+  final dynamic syphonCameraDevice;
+  final ValueChanged<dynamic>? onSyphonCameraDeviceChanged;
+  final int? syphonCameraIndexOverride;
+  final ValueChanged<int?>? onSyphonCameraIndexOverrideChanged;
+
   const SettingsScreen({
     super.key,
     this.availableDevices = const [],
@@ -24,6 +29,10 @@ class SettingsScreen extends StatefulWidget {
     this.availableAudioDevices = const [],
     this.selectedAudioDevice,
     this.onAudioDeviceSelected,
+    this.syphonCameraDevice,
+    this.onSyphonCameraDeviceChanged,
+    this.syphonCameraIndexOverride,
+    this.onSyphonCameraIndexOverrideChanged,
   });
 
   @override
@@ -33,10 +42,12 @@ class SettingsScreen extends StatefulWidget {
 class _SettingsScreenState extends State<SettingsScreen> {
   final _backendCtrl =
       TextEditingController(text: BackendConfig.wsUrl);
+  late final TextEditingController _cameraIndexCtrl;
   String? _operatorName;
 
   late dynamic _localSelectedDevice;
   late dynamic _localSelectedAudio;
+  late dynamic _localSyphonCameraDevice;
 
   bool get _isMacOSPlatform =>
       !kIsWeb && defaultTargetPlatform == TargetPlatform.macOS;
@@ -46,6 +57,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
     super.initState();
     _localSelectedDevice = widget.selectedDevice;
     _localSelectedAudio = widget.selectedAudioDevice;
+    _localSyphonCameraDevice = widget.syphonCameraDevice ?? widget.selectedDevice;
+    _cameraIndexCtrl = TextEditingController(
+      text: widget.syphonCameraIndexOverride?.toString() ?? '',
+    );
     _loadOperatorName();
   }
 
@@ -58,6 +73,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   @override
   void dispose() {
     _backendCtrl.dispose();
+    _cameraIndexCtrl.dispose();
     super.dispose();
   }
 
@@ -242,6 +258,62 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             widget.onDeviceSelected?.call(d);
                           },
                         ),
+                        const SizedBox(height: 16),
+                        Text('SYPHON CAMERA',
+                            style: AfsTheme.labelSmall(
+                                AfsTheme.ashGray.withAlpha(120))),
+                        const SizedBox(height: 10),
+                        _DeviceDropdown(
+                          devices: widget.availableDevices,
+                          selected: _localSyphonCameraDevice,
+                          nameOf: _videoDeviceName,
+                          icon: Icons.screen_share_rounded,
+                          onChanged: (d) {
+                            setState(() => _localSyphonCameraDevice = d);
+                            widget.onSyphonCameraDeviceChanged?.call(d);
+                          },
+                        ),
+                        const SizedBox(height: 16),
+                        Text('SYPHON CAMERA INDEX',
+                            style: AfsTheme.labelSmall(
+                                AfsTheme.ashGray.withAlpha(120))),
+                        const SizedBox(height: 10),
+                        TextField(
+                          controller: _cameraIndexCtrl,
+                          keyboardType: TextInputType.number,
+                          decoration: InputDecoration(
+                            filled: true,
+                            fillColor: AfsTheme.surfaceHigh,
+                            hintText: 'Optional manual OpenCV camera index',
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(10),
+                              borderSide:
+                                  BorderSide(color: AfsTheme.outlineGhost),
+                            ),
+                            enabledBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(10),
+                              borderSide:
+                                  BorderSide(color: AfsTheme.outlineGhost),
+                            ),
+                            focusedBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(10),
+                              borderSide: BorderSide(
+                                  color: AfsTheme.neonGreen.withAlpha(120)),
+                            ),
+                            contentPadding: const EdgeInsets.symmetric(
+                                horizontal: 14, vertical: 12),
+                          ),
+                          onChanged: (value) {
+                            final idx = int.tryParse(value);
+                            widget.onSyphonCameraIndexOverrideChanged?.call(idx);
+                          },
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          'Select the Syphon source here, or use a manual camera index if the backend device order differs.',
+                          style: AfsTheme.labelSmall(
+                              AfsTheme.ashGray.withAlpha(80)),
+                        ),
                         const SizedBox(height: 8),
                         Row(
                           children: [
@@ -250,7 +322,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                 color: AfsTheme.ashGray.withAlpha(80)),
                             const SizedBox(width: 6),
                             Text(
-                              'Changes apply immediately to the live feed.',
+                              'Manual index overrides the dropdown selection.',
                               style: AfsTheme.labelSmall(
                                   AfsTheme.ashGray.withAlpha(80)),
                             ),

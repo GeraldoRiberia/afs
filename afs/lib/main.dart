@@ -140,6 +140,8 @@ class _CameraScreenState extends State<CameraScreen> {
   // Device List
   List<dynamic> _availableDevices = [];
   dynamic _selectedDevice;
+  int? _selectedSyphonCameraIndex;
+  int? _syphonCameraIndexOverride;
 
   // Audio Device List (macOS only)
   List<dynamic> _availableAudioDevices = [];
@@ -294,9 +296,15 @@ class _CameraScreenState extends State<CameraScreen> {
     if (_isSyphonActive) {
       _channel!.sink.add(jsonEncode({'command': 'stop_syphon'}));
     } else {
+      final cameraIdx = _syphonCameraIndexOverride ??
+          _selectedSyphonCameraIndex ??
+          0;
       // camera_idx: 0 = default system camera (same as cv2.VideoCapture(0)).
       // macOS typically assigns the built-in camera as 0, external USB as 1+.
-      _channel!.sink.add(jsonEncode({'command': 'start_syphon', 'camera_idx': 0}));
+      _channel!.sink.add(jsonEncode({
+        'command': 'start_syphon',
+        'camera_idx': cameraIdx,
+      }));
     }
     // Optimistically update state; the syphon_ack will confirm/correct it.
     setState(() => _isSyphonActive = !_isSyphonActive);
@@ -435,6 +443,7 @@ class _CameraScreenState extends State<CameraScreen> {
           if (audioDevices.isNotEmpty) _selectedAudioDevice = audioDevices.first;
           if (videoDevices.isNotEmpty) {
             _selectedDevice = videoDevices.first;
+            _selectedSyphonCameraIndex = 0;
             _initializeMacOSCamera(_selectedDevice);
           }
         });
@@ -444,6 +453,7 @@ class _CameraScreenState extends State<CameraScreen> {
         _availableDevices = _mobileCameras;
         if (_mobileCameras.isNotEmpty) {
           _selectedDevice = _mobileCameras.first;
+          _selectedSyphonCameraIndex = 0;
           _initializeMobileCamera(_selectedDevice);
         }
       });
@@ -487,6 +497,16 @@ class _CameraScreenState extends State<CameraScreen> {
 
   void _onAudioDeviceSelected(dynamic device) {
     setState(() => _selectedAudioDevice = device);
+  }
+
+  void _onSyphonCameraDeviceSelected(dynamic device) {
+    final index = _availableDevices.indexOf(device);
+    if (index < 0) return;
+    setState(() => _selectedSyphonCameraIndex = index);
+  }
+
+  void _onSyphonCameraIndexOverrideChanged(int? idx) {
+    setState(() => _syphonCameraIndexOverride = idx);
   }
 
   // ── Recording ─────────────────────────────────────────────────────────────
@@ -883,6 +903,13 @@ class _CameraScreenState extends State<CameraScreen> {
                       availableAudioDevices: _availableAudioDevices,
                       selectedAudioDevice: _selectedAudioDevice,
                       onAudioDeviceSelected: _onAudioDeviceSelected,
+                      syphonCameraDevice: _selectedSyphonCameraIndex != null
+                          ? _availableDevices[_selectedSyphonCameraIndex!]
+                          : _selectedDevice,
+                      onSyphonCameraDeviceChanged: _onSyphonCameraDeviceSelected,
+                      syphonCameraIndexOverride: _syphonCameraIndexOverride,
+                      onSyphonCameraIndexOverrideChanged:
+                          _onSyphonCameraIndexOverrideChanged,
                     ),
                   ),
                 ),
