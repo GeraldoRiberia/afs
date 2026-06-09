@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-@router.post("/register", response_model=AuthResponse)
+@router.post("/auth/register", response_model=AuthResponse)
 async def register(payload: RegisterRequest):
     collection = require_users_collection()
     email = normalize_email(payload.email)
@@ -58,7 +58,7 @@ async def register(payload: RegisterRequest):
         token=access_token,
     )
 
-@router.post("/login", response_model=AuthResponse)
+@router.post("/auth/login", response_model=AuthResponse)
 async def login(payload: LoginRequest):
     collection = require_users_collection()
     email = normalize_email(payload.email)
@@ -84,7 +84,7 @@ async def login(payload: LoginRequest):
         token=access_token,
     )
 
-@router.get("/verify", response_model=UserPublic)
+@router.get("/auth/verify", response_model=UserPublic)
 async def verify_token(current_user: UserPublic = Depends(get_current_user)):
     """Verify JWT token and return user info"""
     return current_user
